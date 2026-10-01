@@ -22,7 +22,7 @@ looker.plugins.visualizations.add({
         }
         .custom-table th, .custom-table td {
           padding: 8px 12px;
-          border-bottom: 1px solid #e0e0e0;
+          border-bottom: 1px solid var(--table-border, #e0e0e0);
           white-space: nowrap;
         }
         .custom-table th {
@@ -30,7 +30,7 @@ looker.plugins.visualizations.add({
           position: sticky;
           top: 0;
           z-index: 10;
-          border-bottom: 2px solid #d0d7de;
+          border-bottom: 2px solid var(--table-border, #d0d7de);
         }
         .custom-table th.draggable-metric {
           cursor: pointer;
@@ -60,7 +60,6 @@ looker.plugins.visualizations.add({
         .sort-indicator {
           display: inline-block;
           margin-left: 6px;
-          color: #1a73e8;
           font-size: 9px;
           vertical-align: middle;
         }
@@ -68,11 +67,12 @@ looker.plugins.visualizations.add({
           text-align: right;
         }
         .custom-table .subtotal-row {
-          background-color: #f1f5f9;
           font-weight: 600;
-          border-top: 1px solid #cbd5e1;
-          border-bottom: 2px solid #cbd5e1;
           cursor: pointer;
+        }
+        .custom-table .subtotal-row td {
+          border-top: 1px solid var(--table-border, #cbd5e1);
+          border-bottom: 2px solid var(--table-border, #cbd5e1);
         }
         .collapse-chevron {
           display: inline-block;
@@ -95,6 +95,12 @@ looker.plugins.visualizations.add({
         }
         .is-bold {
           font-weight: bold !important;
+        }
+        .is-italic {
+          font-style: italic !important;
+        }
+        .is-underline {
+          text-decoration: underline !important;
         }
       </style>
       <div class="custom-vis-table-container" id="table-container"></div>
@@ -330,7 +336,59 @@ looker.plugins.visualizations.add({
       seriesOptions[`bold_${fieldName}`] = {
         section: "Series",
         type: "boolean",
-        label: `Bold`,
+        label: "Bold",
+        display_size: "third",
+        default: false,
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`italic_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Italic",
+        display_size: "third",
+        default: false,
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`underline_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Underl.",
+        display_size: "third",
+        default: false,
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`fontColor_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "color",
+        label: "Font Color",
+        display_size: "half",
+        default: "",
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`bgColor_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "color",
+        label: "Background Color",
+        display_size: "half",
+        default: "",
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`matchBorder_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Match Border to Background",
         default: false,
         hidden: isHidden,
         order: seriesOrder++
@@ -369,8 +427,40 @@ looker.plugins.visualizations.add({
     });
 
     const formattingOptions = {
-      headerFontColor: { section: "Formatting", type: "string", display: "color", label: "Header Font Color", default: "#555555", order: 1 },
-      headerBgColor: { section: "Formatting", type: "string", display: "color", label: "Header Background Color", default: "#f6f8fa", order: 2 },
+      headerFontSize: {
+        section: "Formatting",
+        type: "number",
+        label: "Header Font Size",
+        display_size: "half",
+        default: 12,
+        order: 1
+      },
+      rowFontSize: {
+        section: "Formatting",
+        type: "number",
+        label: "Row Font Size",
+        display_size: "half",
+        default: 12,
+        order: 2
+      },
+      headerFontColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Header Font Color",
+        display_size: "half",
+        default: "#555555",
+        order: 3
+      },
+      headerBgColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Header Background Color",
+        display_size: "half",
+        default: "#f6f8fa",
+        order: 4
+      },
       headerAlign: {
         section: "Formatting",
         type: "string",
@@ -383,7 +473,43 @@ looker.plugins.visualizations.add({
           { "Right": "right" }
         ],
         default: "",
-        order: 3
+        order: 5
+      },
+      subtotalFontColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Subtotal Font Color",
+        display_size: "half",
+        default: "#333333",
+        order: 6
+      },
+      subtotalBgColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Subtotal Background",
+        display_size: "half",
+        default: "#f1f5f9",
+        order: 7
+      },
+      rowBgColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Row Background",
+        display_size: "half",
+        default: "#ffffff",
+        order: 8
+      },
+      borderColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Border Color",
+        display_size: "half",
+        default: "#e0e0e0",
+        order: 9
       }
     };
 
@@ -485,8 +611,40 @@ looker.plugins.visualizations.add({
     // 3. APPLY CONFIG & RENDER
     const headerBg = config.headerBgColor || "#f6f8fa";
     const headerFont = config.headerFontColor || "#555555";
-    const boldL1 = config[`bold_${level1Key}`] ? 'is-bold' : '';
-    const boldL2 = config[`bold_${level2Key}`] ? 'is-bold' : '';
+    const headerFontSize = Number(config.headerFontSize) > 0 ? Number(config.headerFontSize) : 12;
+    const rowFontSize = Number(config.rowFontSize) > 0 ? Number(config.rowFontSize) : 12;
+    const asColor = (value, fallback) => (
+      typeof value === "string" && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value.trim())
+        ? value.trim()
+        : fallback
+    );
+    const subtotalFont = asColor(config.subtotalFontColor, "#333333");
+    const subtotalBg = asColor(config.subtotalBgColor, "#f1f5f9");
+    const rowBg = asColor(config.rowBgColor, "#ffffff");
+    const borderColor = asColor(config.borderColor, "#e0e0e0");
+
+    // Series color wins on that column. An empty series color falls through to the row color.
+    const cellColorCss = (fieldName, kind) => {
+      const rowFont = kind === "subtotal" ? subtotalFont : "#333333";
+      const rowBackground = kind === "subtotal" ? subtotalBg : rowBg;
+      const font = asColor(config[`fontColor_${fieldName}`], "") || rowFont;
+      const bg = asColor(config[`bgColor_${fieldName}`], "") || rowBackground;
+      return `color: ${font}; background-color: ${bg};${borderMatchCss(fieldName)}`;
+    };
+
+    // Only the series background is used. An empty background leaves the global border in place.
+    const borderMatchCss = (fieldName) => {
+      if (!config[`matchBorder_${fieldName}`]) return "";
+      const seriesBg = asColor(config[`bgColor_${fieldName}`], "");
+      return seriesBg ? ` border-color: ${seriesBg};` : "";
+    };
+    const textStyleClass = (fieldName) => [
+      config[`bold_${fieldName}`] ? "is-bold" : "",
+      config[`italic_${fieldName}`] ? "is-italic" : "",
+      config[`underline_${fieldName}`] ? "is-underline" : ""
+    ].filter(Boolean).join(" ");
+    const styleL1 = textStyleClass(level1Key);
+    const styleL2 = textStyleClass(level2Key);
 
     // Helper functions to retrieve per-column styling declarations
     const getColumnInlineCss = (fieldName, defaultAlign = '') => {
@@ -616,7 +774,7 @@ looker.plugins.visualizations.add({
     [dimensions[0], dimensions[1]].forEach(field => {
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
-      html += `<th style="background-color: ${headerBg}; color: ${headerFont}; ${colCss}">${customLabel}</th>`;
+      html += `<th style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
     });
 
     // Render Metric Headers dynamically with drag-and-drop support
@@ -625,15 +783,15 @@ looker.plugins.visualizations.add({
       const colCss = getHeaderInlineCss(field.name, 'right');
       const isActiveSort = field.name === sortMetric;
       const sortArrow = isActiveSort
-        ? `<span class="sort-indicator" aria-hidden="true">${sortDirection === "asc" ? "▲" : "▼"}</span>`
+        ? `<span class="sort-indicator" aria-hidden="true" style="color: ${headerFont};">${sortDirection === "asc" ? "▲" : "▼"}</span>`
         : "";
       const sortTitle = isActiveSort
         ? `Sorted ${sortDirection === "asc" ? "ascending" : "descending"}. Click to reverse.`
         : "Click to sort by this metric";
-      html += `<th class="number draggable-metric" draggable="true" data-field-name="${field.name}" title="${sortTitle}" style="background-color: ${headerBg}; color: ${headerFont}; ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
+      html += `<th class="number draggable-metric" draggable="true" data-field-name="${field.name}" title="${sortTitle}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
     });
     
-    html += `</tr></thead><tbody>`;
+    html += `</tr></thead><tbody style="font-size: ${rowFontSize}px;">`;
 
     // Render Rows & Subtotals
     sortedGroups.forEach(group => {
@@ -647,11 +805,11 @@ looker.plugins.visualizations.add({
         const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
 
         html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
-                   <td class="${boldL1}" style="${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>
-                   <td style="${l2Css}"><em>Subtotal</em></td>`;
+                   <td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>
+                   <td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`;
         
         orderedMetrics.forEach(m => {
-          const boldM = config[`bold_${m.name}`] ? 'is-bold' : '';
+          const styleM = textStyleClass(m.name);
           const mCss = getColumnInlineCss(m.name, 'right');
 
           // Check if Looker provided a pre-calculated subtotal cell
@@ -666,7 +824,7 @@ looker.plugins.visualizations.add({
             formattedSubtotal = formatMetricValue(group.totals[m.name], m.name);
           }
 
-          html += `<td class="number ${boldM}" style="${mCss}">${formattedSubtotal}</td>`;
+          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "subtotal")} ${mCss}">${formattedSubtotal}</td>`;
         });
         html += `</tr>`;
       }
@@ -690,20 +848,20 @@ looker.plugins.visualizations.add({
           l1Content = group.renderedLabel || NULL_DISPLAY;
         }
 
-        const l1ClassNames = [l1IndentClass, boldL1].filter(Boolean).join(' ');
+        const l1ClassNames = [l1IndentClass, styleL1].filter(Boolean).join(' ');
         const l1ClassAttr = l1ClassNames ? ` class="${l1ClassNames}"` : '';
         
         const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
 
         html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
-                   <td${l1ClassAttr} style="${l1Css}">${l1Content}</td>
-                   <td class="${boldL2}" style="${l2Css}">${cat2ValHtml}</td>`;
+                   <td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>
+                   <td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`;
         
         orderedMetrics.forEach(m => {
           const mFormatted = formatMetricValue(row[m.name].value, m.name, row[m.name]);
-          const boldM = config[`bold_${m.name}`] ? 'is-bold' : '';
+          const styleM = textStyleClass(m.name);
           const mCss = getColumnInlineCss(m.name, 'right');
-          html += `<td class="number ${boldM}" style="${mCss}">${mFormatted}</td>`;
+          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "detail")} ${mCss}">${mFormatted}</td>`;
         });
         html += `</tr>`;
       });
@@ -725,7 +883,7 @@ looker.plugins.visualizations.add({
           formattedTotal = formatMetricValue(grandTotals[m.name], m.name);
         }
 
-        html += `<td class="number" style="${mCss}">${formattedTotal}</td>`;
+        html += `<td class="number ${textStyleClass(m.name)}" style="${borderMatchCss(m.name)} ${mCss}">${formattedTotal}</td>`;
       });
       html += `</tr>`;
     }
@@ -733,6 +891,7 @@ looker.plugins.visualizations.add({
     html += `</tbody></table>`;
 
     const container = document.getElementById("table-container");
+    container.style.setProperty("--table-border", borderColor);
     container.innerHTML = html;
 
     // A click updates viz config the same way a sort click does.
