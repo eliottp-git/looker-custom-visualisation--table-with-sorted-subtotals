@@ -513,12 +513,220 @@ looker.plugins.visualizations.add({
       }
     };
 
+    // Conditional Formatting: 5 rule slots with progressive reveal and progressive field dropdowns
+    const isCfMasterEnabled = config.enable_cf === true;
+    const cfOptions = {
+      enable_cf: {
+        section: "Formatting",
+        type: "boolean",
+        label: "Enable Conditional Formatting",
+        default: false,
+        order: 10
+      }
+    };
+
+    const maxFieldsPerRule = Math.max(metrics.length, 5);
+    const staleCfConfigUpdates = {};
+
+    const cfPresetDefaults = [
+      { op: "gt", val: 0, bg: "#dcfce7", font: "#166534" }, // Rule 1: Green (> 0)
+      { op: "lt", val: 0, bg: "#fee2e2", font: "#991b1b" }, // Rule 2: Red (< 0)
+      { op: "gt", val: 0, bg: "#fef3c7", font: "#92400e" }, // Rule 3: Amber
+      { op: "gt", val: 0, bg: "#e0f2fe", font: "#0369a1" }, // Rule 4: Blue
+      { op: "gt", val: 0, bg: "#f3e8ff", font: "#6b21a8" }  // Rule 5: Purple
+    ];
+
+    let cfOrder = 11;
+    let prevRuleActive = isCfMasterEnabled;
+
+    for (let i = 1; i <= 5; i++) {
+      const isRuleActive = config[`cf_active_${i}`] === true;
+      const isRuleVisible = prevRuleActive;
+      const isDetailsVisible = isRuleVisible && isRuleActive;
+      const preset = cfPresetDefaults[i - 1];
+
+      cfOptions[`cf_active_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Enable Rule ${i}`,
+        default: false,
+        hidden: !isRuleVisible,
+        order: cfOrder++
+      };
+
+      // Collect valid selected field names sequentially.
+      // Once any slot is empty, subsequent slots are considered empty.
+      const activeFieldsInRule = [];
+      for (let f = 1; f <= maxFieldsPerRule; f++) {
+        const rawVal = config[`cf_field_${i}_${f}`] || (f === 1 ? config[`cf_field_${i}`] : "");
+        if (rawVal && metrics.some(m => m.name === rawVal)) {
+          activeFieldsInRule.push(rawVal);
+        } else {
+          break; // Stop at first empty or invalid slot
+        }
+      }
+
+      // Purge any stale values in slots that should no longer be visible
+      for (let f = activeFieldsInRule.length + 2; f <= maxFieldsPerRule; f++) {
+        if (config[`cf_field_${i}_${f}`]) {
+          staleCfConfigUpdates[`cf_field_${i}_${f}`] = "";
+        }
+      }
+
+      // Render progressive field dropdowns:
+      // Slots 1..activeFieldsInRule.length are visible and hold selections.
+      // Exactly ONE additional slot is shown as "↳ Add Another Field" (if remaining unselected metrics exist).
+      // All subsequent slots are hidden.
+      for (let f = 1; f <= maxFieldsPerRule; f++) {
+        const isSlotVisible = isDetailsVisible && (f <= activeFieldsInRule.length + 1) && (f <= metrics.length);
+
+        // Filter options for slot f: exclude metrics selected in other slots of this rule
+        const otherSelectedMetrics = new Set(
+          activeFieldsInRule.filter((_, idx) => idx !== f - 1)
+        );
+
+        const slotMetricOptions = [
+          { "(None)": "" },
+          ...metrics
+            .filter(m => !otherSelectedMetrics.has(m.name))
+            .map(field => {
+              const fieldLabel = field.label_short || field.label || field.name;
+              return { [fieldLabel]: field.name };
+            })
+        ];
+
+        cfOptions[`cf_field_${i}_${f}`] = {
+          section: "Formatting",
+          type: "string",
+          display: "select",
+          label: f === 1 ? `Rule ${i} Field` : `↳ Add Another Field`,
+          values: slotMetricOptions,
+          default: f === 1 ? (config[`cf_field_${i}`] || "") : "",
+          hidden: !isSlotVisible,
+          order: cfOrder++
+        };
+      }
+
+      cfOptions[`cf_operator_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "select",
+        label: `Rule ${i} Condition`,
+        values: [
+          { "Greater than (>)": "gt" },
+          { "Less than (<)": "lt" },
+          { "Greater than or equal (>=)": "gte" },
+          { "Less than or equal (<=)": "lte" },
+          { "Equal to (==)": "eq" },
+          { "Not equal to (!=)": "neq" },
+          { "Between [min, max]": "between" }
+        ],
+        default: preset.op,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_value_${i}`] = {
+        section: "Formatting",
+        type: "number",
+        label: `Rule ${i} Value`,
+        default: preset.val,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      const isBetween = (config[`cf_operator_${i}`] || preset.op) === "between";
+      cfOptions[`cf_value_max_${i}`] = {
+        section: "Formatting",
+        type: "number",
+        label: `Rule ${i} Max Value`,
+        default: 100,
+        display_size: "half",
+        hidden: !isDetailsVisible || !isBetween,
+        order: cfOrder++
+      };
+
+      const hasBg = config[`cf_use_bg_${i}`] !== false;
+      const hasFont = config[`cf_use_font_${i}`] !== false;
+
+      cfOptions[`cf_use_bg_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Color Background`,
+        default: true,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_bg_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: `Rule ${i} Background`,
+        default: preset.bg,
+        display_size: "half",
+        hidden: !isDetailsVisible || !hasBg,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_use_font_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Color Text`,
+        default: true,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_font_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: `Rule ${i} Text Color`,
+        default: preset.font,
+        display_size: "half",
+        hidden: !isDetailsVisible || !hasFont,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_subtotals_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Subtotals`,
+        default: true,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_totals_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Grand Total`,
+        default: true,
+        display_size: "half",
+        hidden: !isDetailsVisible,
+        order: cfOrder++
+      };
+
+      prevRuleActive = isDetailsVisible;
+    }
+
     const options = {
       ...plotOptions,
       ...internalOptions,
       ...seriesOptions,
-      ...formattingOptions
+      ...formattingOptions,
+      ...cfOptions
     };
+
+    if (Object.keys(staleCfConfigUpdates).length > 0) {
+      this.trigger('updateConfig', [staleCfConfigUpdates]);
+    }
 
     this.trigger('registerOptions', options);
 
@@ -623,12 +831,115 @@ looker.plugins.visualizations.add({
     const rowBg = asColor(config.rowBgColor, "#ffffff");
     const borderColor = asColor(config.borderColor, "#e0e0e0");
 
+    const parseNumericValue = (val) => {
+      if (val === null || val === undefined || val === "") return null;
+      if (typeof val === "number") return isNaN(val) ? null : val;
+      if (typeof val === "string") {
+        const cleaned = val.replace(/[$,€£%\s]/g, "");
+        const parsed = parseFloat(cleaned);
+        return isNaN(parsed) ? null : parsed;
+      }
+      return null;
+    };
+
+    // Helper to evaluate if a cell matches any conditional formatting rule
+    const getCfStyle = (fieldName, kind, rawValue) => {
+      if (!isCfMasterEnabled) return null;
+      const numVal = parseNumericValue(rawValue);
+      if (numVal === null) return null;
+
+      for (let i = 1; i <= 5; i++) {
+        // Rule must be enabled
+        const isRuleActive = config[`cf_active_${i}`] === true || Boolean(config[`cf_field_${i}`]);
+        if (!isRuleActive) continue;
+
+        // Check if the current field is selected under Rule i across sequential active dropdown slots
+        const activeFieldsForRule = [];
+        for (let f = 1; f <= maxFieldsPerRule; f++) {
+          const val = config[`cf_field_${i}_${f}`] || (f === 1 ? config[`cf_field_${i}`] : "");
+          if (val && metrics.some(m => m.name === val)) {
+            activeFieldsForRule.push(val);
+          } else {
+            break; // Stop at first empty slot so trailing/stale slots are never applied
+          }
+        }
+
+        const isLegacyChecked = config[`cf_field_${i}_${fieldName}`] === true;
+        const isFieldChecked = activeFieldsForRule.includes(fieldName) || isLegacyChecked;
+        if (!isFieldChecked) continue;
+
+        // Check subtotals / grand totals toggles (both default to true)
+        if (kind === "subtotal" && config[`cf_subtotals_${i}`] === false) continue;
+        if (kind === "total" && config[`cf_totals_${i}`] === false) continue;
+
+        const defaultPreset = cfPresetDefaults[i - 1];
+        const op = config[`cf_operator_${i}`] || defaultPreset.op;
+        const thresh = typeof config[`cf_value_${i}`] === "number" ? config[`cf_value_${i}`] : (parseFloat(config[`cf_value_${i}`]) || 0);
+        const threshMax = typeof config[`cf_value_max_${i}`] === "number" ? config[`cf_value_max_${i}`] : (parseFloat(config[`cf_value_max_${i}`]) || 0);
+
+        let matches = false;
+        switch (op) {
+          case "gt":
+            matches = numVal > thresh;
+            break;
+          case "gte":
+            matches = numVal >= thresh;
+            break;
+          case "lt":
+            matches = numVal < thresh;
+            break;
+          case "lte":
+            matches = numVal <= thresh;
+            break;
+          case "eq":
+            matches = Math.abs(numVal - thresh) < 1e-9;
+            break;
+          case "neq":
+            matches = Math.abs(numVal - thresh) >= 1e-9;
+            break;
+          case "between": {
+            const min = Math.min(thresh, threshMax);
+            const max = Math.max(thresh, threshMax);
+            matches = numVal >= min && numVal <= max;
+            break;
+          }
+          default:
+            matches = false;
+        }
+
+        if (matches) {
+          const useBg = config[`cf_use_bg_${i}`] !== false;
+          const useFont = config[`cf_use_font_${i}`] !== false;
+
+          let bg = null;
+          if (useBg) {
+            const rawBg = config[`cf_bg_${i}`];
+            bg = rawBg === "" ? "" : asColor(rawBg, defaultPreset.bg);
+          }
+
+          let font = null;
+          if (useFont) {
+            const rawFont = config[`cf_font_${i}`];
+            font = rawFont === "" ? "" : asColor(rawFont, defaultPreset.font);
+          }
+
+          return { bg, font };
+        }
+      }
+
+      return null;
+    };
+
     // Series color wins on that column. An empty series color falls through to the row color.
-    const cellColorCss = (fieldName, kind) => {
+    // Conditional formatting (if matched) takes highest precedence for that cell.
+    const cellColorCss = (fieldName, kind, rawValue) => {
       const rowFont = kind === "subtotal" ? subtotalFont : "#333333";
-      const rowBackground = kind === "subtotal" ? subtotalBg : rowBg;
-      const font = asColor(config[`fontColor_${fieldName}`], "") || rowFont;
-      const bg = asColor(config[`bgColor_${fieldName}`], "") || rowBackground;
+      const rowBackground = kind === "subtotal" ? subtotalBg : (kind === "total" ? "#e2e8f0" : rowBg);
+
+      const cf = getCfStyle(fieldName, kind, rawValue);
+
+      const font = (cf && cf.font !== null) ? cf.font : (asColor(config[`fontColor_${fieldName}`], "") || rowFont);
+      const bg = (cf && cf.bg !== null) ? cf.bg : (asColor(config[`bgColor_${fieldName}`], "") || rowBackground);
       return `color: ${font}; background-color: ${bg};${borderMatchCss(fieldName)}`;
     };
 
@@ -815,16 +1126,19 @@ looker.plugins.visualizations.add({
           // Check if Looker provided a pre-calculated subtotal cell
           const nativeCell = nativeSubRow ? nativeSubRow[m.name] : null;
           let formattedSubtotal;
+          let rawSubtotalVal;
 
           if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
             // Use native cell with formatMetricValue (handles custom formatting overrides or defaults to native rendered)
             formattedSubtotal = formatMetricValue(nativeCell.value, m.name, nativeCell);
+            rawSubtotalVal = nativeCell.value;
           } else {
             // Fallback to JS-aggregated total
             formattedSubtotal = formatMetricValue(group.totals[m.name], m.name);
+            rawSubtotalVal = group.totals[m.name];
           }
 
-          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "subtotal")} ${mCss}">${formattedSubtotal}</td>`;
+          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "subtotal", rawSubtotalVal)} ${mCss}">${formattedSubtotal}</td>`;
         });
         html += `</tr>`;
       }
@@ -858,10 +1172,12 @@ looker.plugins.visualizations.add({
                    <td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`;
         
         orderedMetrics.forEach(m => {
-          const mFormatted = formatMetricValue(row[m.name].value, m.name, row[m.name]);
+          const mCell = row[m.name];
+          const rawRowVal = mCell ? mCell.value : undefined;
+          const mFormatted = formatMetricValue(rawRowVal, m.name, mCell);
           const styleM = textStyleClass(m.name);
           const mCss = getColumnInlineCss(m.name, 'right');
-          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "detail")} ${mCss}">${mFormatted}</td>`;
+          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
         });
         html += `</tr>`;
       });
@@ -876,14 +1192,17 @@ looker.plugins.visualizations.add({
         const mCss = getColumnInlineCss(m.name, 'right');
         const nativeTotalCell = nativeTotalsData[m.name];
         let formattedTotal;
+        let rawTotalVal;
 
         if (nativeTotalCell && (nativeTotalCell.value !== undefined || nativeTotalCell.rendered !== undefined)) {
           formattedTotal = formatMetricValue(nativeTotalCell.value, m.name, nativeTotalCell);
+          rawTotalVal = nativeTotalCell.value;
         } else {
           formattedTotal = formatMetricValue(grandTotals[m.name], m.name);
+          rawTotalVal = grandTotals[m.name];
         }
 
-        html += `<td class="number ${textStyleClass(m.name)}" style="${borderMatchCss(m.name)} ${mCss}">${formattedTotal}</td>`;
+        html += `<td class="number ${textStyleClass(m.name)}" style="${cellColorCss(m.name, "total", rawTotalVal)} ${mCss}">${formattedTotal}</td>`;
       });
       html += `</tr>`;
     }
