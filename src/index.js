@@ -1,6 +1,6 @@
 looker.plugins.visualizations.add({
   id: "subtotal_sorted_table",
-  label: "Table with Subtotal Sorting",
+  label: "Table with Sorted Subtotals",
   
   options: {}, // Dynamically generated in updateAsync
 
@@ -72,6 +72,17 @@ looker.plugins.visualizations.add({
           font-weight: 600;
           border-top: 1px solid #cbd5e1;
           border-bottom: 2px solid #cbd5e1;
+          cursor: pointer;
+        }
+        .collapse-chevron {
+          display: inline-block;
+          width: 12px;
+          margin-right: 6px;
+          color: #64748b;
+          font-size: 9px;
+        }
+        .custom-table tr.group-detail.is-collapsed {
+          display: none;
         }
         .custom-table .grand-total-row {
           background-color: #e2e8f0;
@@ -162,6 +173,30 @@ looker.plugins.visualizations.add({
       orderedMetricNames = [...queryMetricNames];
     }
 
+    const readCollapsedKeys = (value) => {
+      if (typeof value !== "string" || !value) return [];
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.map(k => String(k)) : [];
+      } catch (e) {
+        return [];
+      }
+    };
+
+    // Same momentary toggle as column order: on means "expand everything", then it turns itself off.
+    let expandAllGroups = false;
+    if (config.resetCollapsedGroups) {
+      expandAllGroups = true;
+      this.trigger("updateConfig", [
+        {
+          collapsedGroups: "",
+          resetCollapsedGroups: false
+        }
+      ]);
+    }
+
+    const hasCollapsedGroups = !expandAllGroups && readCollapsedKeys(config.collapsedGroups).length > 0;
+
     const metricMap = {};
     metrics.forEach(m => { metricMap[m.name] = m; });
     const orderedMetrics = orderedMetricNames.map(name => metricMap[name]).filter(Boolean);
@@ -195,6 +230,15 @@ looker.plugins.visualizations.add({
       hidden: !hasCustomOrder
     };
 
+    plotOptions.resetCollapsedGroups = {
+      section: "Plot",
+      type: "boolean",
+      label: "Revert to Uncollapsed View",
+      default: false,
+      order: 5,
+      hidden: !hasCollapsedGroups
+    };
+
     // Hidden option to register metricColumnOrder with Looker's configuration store.
     // In Looker visualizations, properties passed via this.trigger('updateConfig')
     // MUST be declared in options so Looker persists and passes them into config on subsequent updateAsync calls.
@@ -208,6 +252,12 @@ looker.plugins.visualizations.add({
         hidden: true
       },
       sortDirection: {
+        type: "string",
+        hidden: true
+      },
+      // Registered so Looker will store it on the Look or dashboard element.
+      // hidden: true keeps it out of the gear menu. Empty means every group is open.
+      collapsedGroups: {
         type: "string",
         hidden: true
       }
@@ -414,6 +464,15 @@ looker.plugins.visualizations.add({
 
     const sortedGroups = Object.values(groups).sort((a, b) => compareNumeric(getGroupSortValue(a), getGroupSortValue(b)));
 
+    // Level 1 values become object keys above, so the stored key is that string.
+    const groupKey = (raw) => (raw === null || raw === undefined ? "null" : String(raw));
+    const escapeAttr = (value) => String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;");
+
+    const collapsedSet = new Set(expandAllGroups ? [] : readCollapsedKeys(config.collapsedGroups));
+
     // Sort rows within groups by the same active metric and direction
     sortedGroups.forEach(group => {
       group.rows.sort((a, b) => {
@@ -583,8 +642,12 @@ looker.plugins.visualizations.add({
         const l2Css = getColumnInlineCss(level2Key);
         const nativeSubRow = nativeSubtotalsMap[group.rawKey];
 
-        html += `<tr class="subtotal-row">
-                   <td class="${boldL1}" style="${l1Css}">${group.renderedLabel || NULL_DISPLAY}</td>
+        const collapsed = collapsedSet.has(groupKey(group.rawKey));
+        const chevron = collapsed ? "&#9654;" : "&#9660;";
+        const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
+
+        html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
+                   <td class="${boldL1}" style="${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>
                    <td style="${l2Css}"><em>Subtotal</em></td>`;
         
         orderedMetrics.forEach(m => {
@@ -630,7 +693,9 @@ looker.plugins.visualizations.add({
         const l1ClassNames = [l1IndentClass, boldL1].filter(Boolean).join(' ');
         const l1ClassAttr = l1ClassNames ? ` class="${l1ClassNames}"` : '';
         
-        html += `<tr>
+        const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
+
+        html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
                    <td${l1ClassAttr} style="${l1Css}">${l1Content}</td>
                    <td class="${boldL2}" style="${l2Css}">${cat2ValHtml}</td>`;
         
@@ -670,8 +735,26 @@ looker.plugins.visualizations.add({
     const container = document.getElementById("table-container");
     container.innerHTML = html;
 
-    // 4. ATTACH DRAG & DROP REORDERING LISTENERS
+    // A click updates viz config the same way a sort click does.
+    // Looker writes that config only when someone saves the Look or dashboard.
+    // A dashboard viewer cannot save, so their clicks last until reload.
     const self = this;
+    container.querySelectorAll("tr.subtotal-row").forEach(tr => {
+      tr.addEventListener("click", () => {
+        const key = tr.getAttribute("data-group-key");
+        if (key === null) return;
+
+        const next = new Set(collapsedSet);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+
+        self.trigger("updateConfig", [
+          { collapsedGroups: JSON.stringify([...next].sort()) }
+        ]);
+      });
+    });
+
+    // 4. ATTACH DRAG & DROP REORDERING LISTENERS
     const metricHeaders = container.querySelectorAll("th.draggable-metric");
     let draggedField = null;
     let suppressHeaderClick = false;
