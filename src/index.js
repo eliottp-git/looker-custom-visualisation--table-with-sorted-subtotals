@@ -137,6 +137,15 @@ looker.plugins.visualizations.add({
     // and table calculations (string calcs in dimension_like, numeric calcs in measure_like).
     const allFields = [...dimensions, ...measures];
     const metrics = [...measures];
+    // Numeric table calculations normally live in measure_like. If Looker only
+    // lists a pivot_index-style calculation under table_calculations, keep it.
+    const metricNames = new Set(metrics.map(m => m.name));
+    (queryResponse.fields.table_calculations || []).forEach((field) => {
+      if (!field || metricNames.has(field.name) || field.is_numeric === false) return;
+      metrics.push(field);
+      allFields.push(field);
+      metricNames.add(field.name);
+    });
 
     if (dimensions.length < 2 || metrics.length < 1) {
       this.addError({
@@ -216,6 +225,49 @@ looker.plugins.visualizations.add({
       return emptyMarker;
     };
 
+    // pivot_index, pivot_offset, pivot_row, and pivot_where produce one column.
+    // Looker marks those calculations can_pivot: false, and the cell is a normal
+    // { value, rendered } rather than a map of pivot keys. Everything else in a
+    // pivoted query is repeated once per pivot value.
+    const firstMeasureCell = (measureName) => {
+      const fromRow = (row) => {
+        if (!row) return null;
+        const cell = row[measureName];
+        return cell && typeof cell === "object" ? cell : null;
+      };
+      if (Array.isArray(data)) {
+        for (let i = 0; i < data.length; i++) {
+          const cell = fromRow(data[i]);
+          if (cell) return cell;
+        }
+      }
+      const subs = queryResponse.subtotals_data;
+      if (subs && typeof subs === "object") {
+        const lists = Object.values(subs);
+        for (let i = 0; i < lists.length; i++) {
+          const list = lists[i];
+          if (!Array.isArray(list)) continue;
+          for (let j = 0; j < list.length; j++) {
+            const cell = fromRow(list[j]);
+            if (cell) return cell;
+          }
+        }
+      }
+      return fromRow(queryResponse.totals_data);
+    };
+
+    const repeatsForEachPivot = (measure) => {
+      if (!hasPivots) return false;
+      const cell = firstMeasureCell(measure.name);
+      if (cell) {
+        const hasPivotBucket = pivots.some((pivot) => Object.prototype.hasOwnProperty.call(cell, pivot.key));
+        if (hasPivotBucket) return true;
+        if (cell.value !== undefined || cell.rendered !== undefined || cell.html !== undefined) return false;
+      }
+      if (measure.can_pivot === false) return false;
+      return true;
+    };
+
     const displayColumns = [];
     if (!hasPivots) {
       metrics.forEach((measure) => {
@@ -229,11 +281,17 @@ looker.plugins.visualizations.add({
         });
       });
     } else {
+      const repeatedMetrics = [];
+      const singleMetrics = [];
+      metrics.forEach((measure) => {
+        if (repeatsForEachPivot(measure)) repeatedMetrics.push(measure);
+        else singleMetrics.push(measure);
+      });
       // Pivot outer, measure inner: Current/Sales, Current/Units, Previous/Sales, Previous/Units.
-      // That is the same column order as Looker's table.
+      // A pivot_index calculation stays one column after those, as in Looker's data table.
       pivots.forEach((pivot) => {
         const label = renderPivotLabel(pivot);
-        metrics.forEach((measure) => {
+        repeatedMetrics.forEach((measure) => {
           displayColumns.push({
             id: measure.name + "||" + pivot.key,
             measureName: measure.name,
@@ -242,6 +300,16 @@ looker.plugins.visualizations.add({
             pivoted: true,
             pivotLabel: label
           });
+        });
+      });
+      singleMetrics.forEach((measure) => {
+        displayColumns.push({
+          id: measure.name,
+          measureName: measure.name,
+          measure,
+          pivotKey: null,
+          pivoted: false,
+          pivotLabel: ""
         });
       });
     }
@@ -1220,14 +1288,31 @@ looker.plugins.visualizations.add({
     );
 
     // Default pivot header is two rows. The Plot toggle folds that into one label.
+    // A single pivot_index column does not belong under a pivot group, so it does not
+    // by itself turn the two-row header on.
     const pivotInBrackets = hasPivots && config.pivotInMeasureLabel === true;
-    const useGroupedHeader = hasPivots && !pivotInBrackets;
+    const hasRepeatedPivotColumns = orderedColumns.some(column => column.pivoted);
+    const useGroupedHeader = hasRepeatedPivotColumns && !pivotInBrackets;
     const headerRowSpan = useGroupedHeader ? ` rowspan="2"` : "";
 
     const columnHeader = (column) => {
       const name = measureLabel(column);
-      if (!pivotInBrackets) return name;
+      if (!pivotInBrackets || !column.pivoted) return name;
       return `${name} (${column.pivotLabel})`;
+    };
+
+    const metricHeaderHtml = (column, spansBothRows) => {
+      const customLabel = columnHeader(column);
+      const colCss = getHeaderInlineCss(column.measureName, 'right');
+      const isActiveSort = column.id === sortMetric;
+      const sortArrow = isActiveSort
+        ? `<span class="sort-indicator" aria-hidden="true" style="color: ${headerFont};">${sortDirection === "asc" ? "▲" : "▼"}</span>`
+        : "";
+      const sortTitle = isActiveSort
+        ? `Sorted ${sortDirection === "asc" ? "ascending" : "descending"}. Click to reverse.`
+        : "Click to sort by this metric";
+      const rowSpanAttr = spansBothRows ? ` rowspan="2"` : "";
+      return `<th${rowSpanAttr} class="number draggable-metric" draggable="true" data-field-name="${escapeAttr(column.id)}" title="${escapeAttr(sortTitle)}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(column.measureName)} ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
     };
 
     let html = `<table class="custom-table"><thead><tr>`;
@@ -1240,34 +1325,34 @@ looker.plugins.visualizations.add({
     });
 
     if (useGroupedHeader) {
-      const pivotGroups = [];
-      orderedColumns.forEach(column => {
-        const last = pivotGroups[pivotGroups.length - 1];
-        if (last && last.pivotKey === column.pivotKey) {
-          last.span += 1;
-        } else {
-          pivotGroups.push({ pivotKey: column.pivotKey, label: column.pivotLabel, span: 1 });
-        }
-      });
       const groupAlign = config.headerAlign || "center";
-      pivotGroups.forEach(group => {
-        html += `<th class="pivot-group" colspan="${group.span}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; text-align: ${groupAlign};">${group.label}</th>`;
-      });
+      let index = 0;
+      while (index < orderedColumns.length) {
+        const column = orderedColumns[index];
+        // A pivot_index column spans both header rows. It is not inside a pivot group.
+        if (!column.pivoted) {
+          html += metricHeaderHtml(column, true);
+          index += 1;
+          continue;
+        }
+        let span = 1;
+        while (
+          index + span < orderedColumns.length &&
+          orderedColumns[index + span].pivoted &&
+          orderedColumns[index + span].pivotKey === column.pivotKey
+        ) {
+          span += 1;
+        }
+        html += `<th class="pivot-group" colspan="${span}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; text-align: ${groupAlign};">${column.pivotLabel}</th>`;
+        index += span;
+      }
       html += `</tr><tr>`;
     }
 
     // Render metric headers. Each one is a display column, so a pivot can be sorted and dragged on its own.
     orderedColumns.forEach(column => {
-      const customLabel = columnHeader(column);
-      const colCss = getHeaderInlineCss(column.measureName, 'right');
-      const isActiveSort = column.id === sortMetric;
-      const sortArrow = isActiveSort
-        ? `<span class="sort-indicator" aria-hidden="true" style="color: ${headerFont};">${sortDirection === "asc" ? "▲" : "▼"}</span>`
-        : "";
-      const sortTitle = isActiveSort
-        ? `Sorted ${sortDirection === "asc" ? "ascending" : "descending"}. Click to reverse.`
-        : "Click to sort by this metric";
-      html += `<th class="number draggable-metric" draggable="true" data-field-name="${escapeAttr(column.id)}" title="${escapeAttr(sortTitle)}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(column.measureName)} ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
+      if (useGroupedHeader && !column.pivoted) return;
+      html += metricHeaderHtml(column, false);
     });
     
     html += `</tr></thead><tbody style="font-size: ${rowFontSize}px;">`;

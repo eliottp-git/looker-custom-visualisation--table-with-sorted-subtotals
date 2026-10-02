@@ -27,7 +27,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - Drag-and-drop reordering of metric columns
 - Column order saved with the tile (survives reloads and dashboard saves)
 - One-click revert to the original column order
-- Pivots become real columns: one per measure and pivot value, for however many values the query returns
+- Pivots become real columns: one per measure and pivot value, for however many values the query returns. A table calculation that uses `pivot_index`, `pivot_offset`, `pivot_row`, or `pivot_where` stays a single column after those pivot columns
 - With a pivot, the header has two rows: the pivot value on top (Current, Previous, or whatever came back) and the measure name underneath. **Pivot Value in Brackets** in the Plot tab folds that into one label, such as `Gross Sales (Current)`
 - A pivot total column is included when Totals is checked in the Data panel
 - Click a pivot column to sort groups by that column's subtotal. Drag to reorder pivot columns. The choice is saved with the tile
