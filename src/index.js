@@ -29,8 +29,19 @@ looker.plugins.visualizations.add({
           font-weight: 600;
           position: sticky;
           top: 0;
-          z-index: 10;
+          z-index: 12;
           border-bottom: 2px solid var(--table-border, #d0d7de);
+        }
+        .custom-table thead tr:nth-child(2) th {
+          top: var(--pivot-header-offset, 0px);
+          z-index: 11;
+        }
+        .custom-table th.pivot-group {
+          text-align: center;
+          vertical-align: middle;
+        }
+        .custom-table thead th[rowspan] {
+          vertical-align: bottom;
         }
         .custom-table th.draggable-metric {
           cursor: pointer;
@@ -143,10 +154,96 @@ looker.plugins.visualizations.add({
     // Check if Looker totals are enabled in the query
     const hasTotals = !!(queryResponse.has_totals || queryResponse.totals_data);
 
+    // A pivot does not add measures. Looker keeps one measure field and nests each
+    // column on the cell: row[measure.name][pivot.key]. Flatten that into one display
+    // column per measure × pivot value. With no pivot, the column id stays the measure
+    // name, so a saved sort and column order still match.
+    const pivotFields = queryResponse.fields.pivots || [];
+    const pivots = Array.isArray(queryResponse.pivots) ? queryResponse.pivots : [];
+    const hasPivots = pivots.length > 0;
+    const emptyMarker = `<span style="color: #94a3b8;">&#8709;</span>`;
+
+    const escapeHtml = (value) => String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+    // Pivot header values are not measure cells. Looker puts a plain string on
+    // pivot.data[field] ("Current"), and a real cell, when it has one, on
+    // pivot.metadata[field]. Reading .value on the string is undefined, which
+    // was rendering as null. Fall back to pivot.key, which is that same value.
+    const labelFromPivotEntry = (entry) => {
+      if (entry === null || entry === undefined || entry === "") return null;
+      if (typeof entry !== "object") return escapeHtml(entry);
+
+      if (typeof entry.html === "string" && entry.html !== "") return entry.html;
+      if (typeof entry.rendered === "string" && entry.rendered !== "") return entry.rendered;
+
+      if (typeof LookerCharts !== "undefined" && LookerCharts.Utils && LookerCharts.Utils.htmlForCell) {
+        const html = LookerCharts.Utils.htmlForCell(entry);
+        if (typeof html === "string" && html !== "" && html !== "null") return html;
+      }
+
+      if (entry.value !== null && entry.value !== undefined && entry.value !== "") {
+        return escapeHtml(entry.value);
+      }
+      return null;
+    };
+
+    const renderPivotLabel = (pivot) => {
+      if (!pivot || pivot.is_total) return "Total";
+
+      const parts = [];
+      pivotFields.forEach((field) => {
+        const fromMetadata = pivot.metadata && labelFromPivotEntry(pivot.metadata[field.name]);
+        const fromData = pivot.data && labelFromPivotEntry(pivot.data[field.name]);
+        const part = fromMetadata || fromData;
+        if (part) parts.push(part);
+      });
+
+      if (parts.length > 0) return parts.join(" / ");
+      if (pivot.key !== null && pivot.key !== undefined && pivot.key !== "") return escapeHtml(pivot.key);
+      return emptyMarker;
+    };
+
+    const displayColumns = [];
+    if (!hasPivots) {
+      metrics.forEach((measure) => {
+        displayColumns.push({
+          id: measure.name,
+          measureName: measure.name,
+          measure,
+          pivotKey: null,
+          pivoted: false,
+          pivotLabel: ""
+        });
+      });
+    } else {
+      // Pivot outer, measure inner: Current/Sales, Current/Units, Previous/Sales, Previous/Units.
+      // That is the same column order as Looker's table.
+      pivots.forEach((pivot) => {
+        const label = renderPivotLabel(pivot);
+        metrics.forEach((measure) => {
+          displayColumns.push({
+            id: measure.name + "||" + pivot.key,
+            measureName: measure.name,
+            measure,
+            pivotKey: pivot.key,
+            pivoted: true,
+            pivotLabel: label
+          });
+        });
+      });
+    }
+
+    const columnById = {};
+    displayColumns.forEach((column) => { columnById[column.id] = column; });
+    const defaultColumnIds = displayColumns.map((column) => column.id);
+
     // Column Order Reconciliation:
-    // Determine the active display order of metrics. Reconciles saved custom order from config
-    // with current query metrics so added/removed fields are handled gracefully.
-    const queryMetricNames = metrics.map(m => m.name);
+    // Determine the active display order. Reconciles saved custom order from config
+    // with the current columns so added/removed fields and pivot values are handled gracefully.
     let savedOrder = config.metricColumnOrder;
     if (typeof savedOrder === "string") {
       try {
@@ -156,17 +253,17 @@ looker.plugins.visualizations.add({
       }
     }
 
-    let orderedMetricNames = [];
+    let orderedColumnIds = [];
     if (Array.isArray(savedOrder)) {
-      orderedMetricNames = savedOrder.filter(name => queryMetricNames.includes(name));
+      orderedColumnIds = savedOrder.filter(name => defaultColumnIds.includes(name));
     }
-    queryMetricNames.forEach(name => {
-      if (!orderedMetricNames.includes(name)) {
-        orderedMetricNames.push(name);
+    defaultColumnIds.forEach(name => {
+      if (!orderedColumnIds.includes(name)) {
+        orderedColumnIds.push(name);
       }
     });
 
-    const hasCustomOrder = orderedMetricNames.some((name, idx) => name !== queryMetricNames[idx]);
+    const hasCustomOrder = orderedColumnIds.some((name, idx) => name !== defaultColumnIds[idx]);
 
     // Handle Reset action from the Plot tab toggle
     if (config.resetColumnOrder) {
@@ -176,7 +273,7 @@ looker.plugins.visualizations.add({
           resetColumnOrder: false
         }
       ]);
-      orderedMetricNames = [...queryMetricNames];
+      orderedColumnIds = [...defaultColumnIds];
     }
 
     const readCollapsedKeys = (value) => {
@@ -203,17 +300,16 @@ looker.plugins.visualizations.add({
 
     const hasCollapsedGroups = !expandAllGroups && readCollapsedKeys(config.collapsedGroups).length > 0;
 
-    const metricMap = {};
-    metrics.forEach(m => { metricMap[m.name] = m; });
-    const orderedMetrics = orderedMetricNames.map(name => metricMap[name]).filter(Boolean);
+    const orderedColumns = orderedColumnIds.map(id => columnById[id]).filter(Boolean);
 
-    // Sort field: first query metric by default. A header click can override this
-    // after the query has already run; we only re-sort the existing result.
-    const defaultSortMetric = queryMetricNames[0];
-    const sortMetric = (typeof config.sortMetric === "string" && queryMetricNames.includes(config.sortMetric))
+    // Sort column: first display column by default (first pivot of the first measure when pivoted).
+    // A header click stores that column id and only re-sorts the existing result.
+    const defaultSortMetric = defaultColumnIds[0];
+    const sortMetric = (typeof config.sortMetric === "string" && defaultColumnIds.includes(config.sortMetric))
       ? config.sortMetric
       : defaultSortMetric;
     const sortDirection = config.sortDirection === "asc" ? "asc" : "desc";
+    const sortColumn = columnById[sortMetric] || orderedColumns[0];
 
     // 1. DYNAMIC OPTIONS CONFIGURATION
     const plotOptions = {
@@ -243,6 +339,17 @@ looker.plugins.visualizations.add({
       default: false,
       order: 5,
       hidden: !hasCollapsedGroups
+    };
+
+    // Off keeps the two header rows (pivot value, then measure name).
+    // On folds both into one cell: "Gross Sales (Current)".
+    plotOptions.pivotInMeasureLabel = {
+      section: "Plot",
+      type: "boolean",
+      label: "Pivot Value in Brackets",
+      default: false,
+      order: 6,
+      hidden: !hasPivots
     };
 
     // Hidden option to register metricColumnOrder with Looker's configuration store.
@@ -730,6 +837,13 @@ looker.plugins.visualizations.add({
 
     this.trigger('registerOptions', options);
 
+    // Looker draws an unset boolean as off, even when default is true.
+    // Subtotals already render in that unset state. Writing true makes the
+    // Plot checkbox match the table. An explicit off stays off.
+    if (config.showSubtotals === undefined) {
+      this.trigger("updateConfig", [{ showSubtotals: true }]);
+    }
+
     // 2. DATA PROCESSING & GROUPING
     const level1Key = dimensions[0].name;
     const level2Key = dimensions[1].name;
@@ -753,9 +867,18 @@ looker.plugins.visualizations.add({
       });
     }
 
+    // Pivoted measure cells are maps of pivot key → cell. Unpivoted cells are the cell itself.
+    const measureCell = (source, column) => {
+      if (!source || !column) return null;
+      const fieldCell = source[column.measureName];
+      if (!fieldCell) return null;
+      if (!column.pivoted) return fieldCell;
+      return fieldCell[column.pivotKey] || null;
+    };
+
     const groups = {};
     const grandTotals = {};
-    metrics.forEach(m => grandTotals[m.name] = 0);
+    orderedColumns.forEach(column => { grandTotals[column.id] = 0; });
 
     data.forEach(row => {
       const cat1ValHtml = LookerCharts.Utils.htmlForCell(row[level1Key]);
@@ -768,27 +891,29 @@ looker.plugins.visualizations.add({
           totals: {},
           rows: []
         };
-        metrics.forEach(m => groups[cat1Raw].totals[m.name] = 0);
+        orderedColumns.forEach(column => { groups[cat1Raw].totals[column.id] = 0; });
       }
 
-      // Aggregate fallback totals
-      metrics.forEach(m => {
-        const val = (row[m.name] && row[m.name].value) || 0;
-        groups[cat1Raw].totals[m.name] += val;
-        grandTotals[m.name] += val;
+      // Aggregate fallback totals per display column (one pivot value, when pivoted).
+      orderedColumns.forEach(column => {
+        const cell = measureCell(row, column);
+        const val = (cell && cell.value) || 0;
+        groups[cat1Raw].totals[column.id] += val;
+        grandTotals[column.id] += val;
       });
 
       groups[cat1Raw].rows.push(row);
     });
 
-    // Sort groups by the active metric (first query metric by default, or the header the user last clicked).
-    // Prefer Looker's native subtotal for that metric; otherwise fall back to the JS-aggregated sum.
+    // Sort groups by the active column (first column by default, or the header the user last clicked).
+    // Prefer Looker's native subtotal for that column; otherwise fall back to the JS-aggregated sum.
     const getGroupSortValue = (group) => {
       const nativeRow = nativeSubtotalsMap[group.rawKey];
-      if (nativeRow && nativeRow[sortMetric] && typeof nativeRow[sortMetric].value === 'number') {
-        return nativeRow[sortMetric].value;
+      const nativeCell = measureCell(nativeRow, sortColumn);
+      if (nativeCell && typeof nativeCell.value === 'number') {
+        return nativeCell.value;
       }
-      return group.totals[sortMetric] || 0;
+      return group.totals[sortColumn.id] || 0;
     };
 
     const compareNumeric = (a, b) => {
@@ -810,8 +935,10 @@ looker.plugins.visualizations.add({
     // Sort rows within groups by the same active metric and direction
     sortedGroups.forEach(group => {
       group.rows.sort((a, b) => {
-        const valA = (a[sortMetric] && a[sortMetric].value) || 0;
-        const valB = (b[sortMetric] && b[sortMetric].value) || 0;
+        const cellA = measureCell(a, sortColumn);
+        const cellB = measureCell(b, sortColumn);
+        const valA = (cellA && cellA.value) || 0;
+        const valB = (cellB && cellB.value) || 0;
         return compareNumeric(valA, valB);
       });
     });
@@ -1031,7 +1158,7 @@ looker.plugins.visualizations.add({
     };
 
     // Symbol for null values (Looker standard crossed zero: ∅)
-    const NULL_DISPLAY = `<span style="color: #94a3b8;">&#8709;</span>`;
+    const NULL_DISPLAY = emptyMarker;
 
     // Helper to detect if a field in LookML represents a percentage
     const isFieldLookMLPercent = (fieldName) => {
@@ -1079,27 +1206,59 @@ looker.plugins.visualizations.add({
         : String(val);
     };
 
+    const measureLabel = (column) => (
+      config[`label_${column.measureName}`] || column.measure.label_short || column.measure.label
+    );
+
+    // Default pivot header is two rows. The Plot toggle folds that into one label.
+    const pivotInBrackets = hasPivots && config.pivotInMeasureLabel === true;
+    const useGroupedHeader = hasPivots && !pivotInBrackets;
+    const headerRowSpan = useGroupedHeader ? ` rowspan="2"` : "";
+
+    const columnHeader = (column) => {
+      const name = measureLabel(column);
+      if (!pivotInBrackets) return name;
+      return `${name} (${column.pivotLabel})`;
+    };
+
     let html = `<table class="custom-table"><thead><tr>`;
     
     // Render Dimension Headers
     [dimensions[0], dimensions[1]].forEach(field => {
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
-      html += `<th style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
+      html += `<th${headerRowSpan} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
     });
 
-    // Render Metric Headers dynamically with drag-and-drop support
-    orderedMetrics.forEach(field => {
-      const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
-      const colCss = getHeaderInlineCss(field.name, 'right');
-      const isActiveSort = field.name === sortMetric;
+    if (useGroupedHeader) {
+      const pivotGroups = [];
+      orderedColumns.forEach(column => {
+        const last = pivotGroups[pivotGroups.length - 1];
+        if (last && last.pivotKey === column.pivotKey) {
+          last.span += 1;
+        } else {
+          pivotGroups.push({ pivotKey: column.pivotKey, label: column.pivotLabel, span: 1 });
+        }
+      });
+      const groupAlign = config.headerAlign || "center";
+      pivotGroups.forEach(group => {
+        html += `<th class="pivot-group" colspan="${group.span}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; text-align: ${groupAlign};">${group.label}</th>`;
+      });
+      html += `</tr><tr>`;
+    }
+
+    // Render metric headers. Each one is a display column, so a pivot can be sorted and dragged on its own.
+    orderedColumns.forEach(column => {
+      const customLabel = columnHeader(column);
+      const colCss = getHeaderInlineCss(column.measureName, 'right');
+      const isActiveSort = column.id === sortMetric;
       const sortArrow = isActiveSort
         ? `<span class="sort-indicator" aria-hidden="true" style="color: ${headerFont};">${sortDirection === "asc" ? "▲" : "▼"}</span>`
         : "";
       const sortTitle = isActiveSort
         ? `Sorted ${sortDirection === "asc" ? "ascending" : "descending"}. Click to reverse.`
         : "Click to sort by this metric";
-      html += `<th class="number draggable-metric" draggable="true" data-field-name="${field.name}" title="${sortTitle}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
+      html += `<th class="number draggable-metric" draggable="true" data-field-name="${escapeAttr(column.id)}" title="${escapeAttr(sortTitle)}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(column.measureName)} ${colCss}"><span class="drag-handle" title="Drag to reorder column">⠿</span>${customLabel}${sortArrow}</th>`;
     });
     
     html += `</tr></thead><tbody style="font-size: ${rowFontSize}px;">`;
@@ -1119,26 +1278,26 @@ looker.plugins.visualizations.add({
                    <td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>
                    <td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`;
         
-        orderedMetrics.forEach(m => {
-          const styleM = textStyleClass(m.name);
-          const mCss = getColumnInlineCss(m.name, 'right');
+        orderedColumns.forEach(column => {
+          const styleM = textStyleClass(column.measureName);
+          const mCss = getColumnInlineCss(column.measureName, 'right');
 
-          // Check if Looker provided a pre-calculated subtotal cell
-          const nativeCell = nativeSubRow ? nativeSubRow[m.name] : null;
+          // Check if Looker provided a pre-calculated subtotal cell for this pivot column
+          const nativeCell = nativeSubRow ? measureCell(nativeSubRow, column) : null;
           let formattedSubtotal;
           let rawSubtotalVal;
 
           if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
             // Use native cell with formatMetricValue (handles custom formatting overrides or defaults to native rendered)
-            formattedSubtotal = formatMetricValue(nativeCell.value, m.name, nativeCell);
+            formattedSubtotal = formatMetricValue(nativeCell.value, column.measureName, nativeCell);
             rawSubtotalVal = nativeCell.value;
           } else {
             // Fallback to JS-aggregated total
-            formattedSubtotal = formatMetricValue(group.totals[m.name], m.name);
-            rawSubtotalVal = group.totals[m.name];
+            formattedSubtotal = formatMetricValue(group.totals[column.id], column.measureName);
+            rawSubtotalVal = group.totals[column.id];
           }
 
-          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "subtotal", rawSubtotalVal)} ${mCss}">${formattedSubtotal}</td>`;
+          html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal)} ${mCss}">${formattedSubtotal}</td>`;
         });
         html += `</tr>`;
       }
@@ -1171,13 +1330,13 @@ looker.plugins.visualizations.add({
                    <td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>
                    <td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`;
         
-        orderedMetrics.forEach(m => {
-          const mCell = row[m.name];
+        orderedColumns.forEach(column => {
+          const mCell = measureCell(row, column);
           const rawRowVal = mCell ? mCell.value : undefined;
-          const mFormatted = formatMetricValue(rawRowVal, m.name, mCell);
-          const styleM = textStyleClass(m.name);
-          const mCss = getColumnInlineCss(m.name, 'right');
-          html += `<td class="number ${styleM}" style="${cellColorCss(m.name, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
+          const mFormatted = formatMetricValue(rawRowVal, column.measureName, mCell);
+          const styleM = textStyleClass(column.measureName);
+          const mCss = getColumnInlineCss(column.measureName, 'right');
+          html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
         });
         html += `</tr>`;
       });
@@ -1188,21 +1347,21 @@ looker.plugins.visualizations.add({
       html += `<tr class="grand-total-row"><td colspan="2">Total</td>`;
       const nativeTotalsData = queryResponse.totals_data || {};
 
-      orderedMetrics.forEach(m => {
-        const mCss = getColumnInlineCss(m.name, 'right');
-        const nativeTotalCell = nativeTotalsData[m.name];
+      orderedColumns.forEach(column => {
+        const mCss = getColumnInlineCss(column.measureName, 'right');
+        const nativeTotalCell = measureCell(nativeTotalsData, column);
         let formattedTotal;
         let rawTotalVal;
 
         if (nativeTotalCell && (nativeTotalCell.value !== undefined || nativeTotalCell.rendered !== undefined)) {
-          formattedTotal = formatMetricValue(nativeTotalCell.value, m.name, nativeTotalCell);
+          formattedTotal = formatMetricValue(nativeTotalCell.value, column.measureName, nativeTotalCell);
           rawTotalVal = nativeTotalCell.value;
         } else {
-          formattedTotal = formatMetricValue(grandTotals[m.name], m.name);
-          rawTotalVal = grandTotals[m.name];
+          formattedTotal = formatMetricValue(grandTotals[column.id], column.measureName);
+          rawTotalVal = grandTotals[column.id];
         }
 
-        html += `<td class="number ${textStyleClass(m.name)}" style="${cellColorCss(m.name, "total", rawTotalVal)} ${mCss}">${formattedTotal}</td>`;
+        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${formattedTotal}</td>`;
       });
       html += `</tr>`;
     }
@@ -1212,6 +1371,13 @@ looker.plugins.visualizations.add({
     const container = document.getElementById("table-container");
     container.style.setProperty("--table-border", borderColor);
     container.innerHTML = html;
+
+    if (useGroupedHeader) {
+      const firstHeaderRow = container.querySelector("thead tr");
+      if (firstHeaderRow) {
+        container.style.setProperty("--pivot-header-offset", firstHeaderRow.getBoundingClientRect().height + "px");
+      }
+    }
 
     // A click updates viz config the same way a sort click does.
     // Looker writes that config only when someone saves the Look or dashboard.
@@ -1262,7 +1428,7 @@ looker.plugins.visualizations.add({
         if (e.target.closest(".drag-handle")) return;
 
         const fieldName = th.getAttribute("data-field-name");
-        if (!fieldName || !queryMetricNames.includes(fieldName)) return;
+        if (!fieldName || !defaultColumnIds.includes(fieldName)) return;
 
         // New column starts descending (same as the default first-metric sort).
         // Clicking the already-active header flips direction, like a normal Looker table.
@@ -1315,7 +1481,7 @@ looker.plugins.visualizations.add({
         const insertBefore = e.clientX < midpoint;
 
         // Clone current order and reorder elements
-        const currentOrder = [...orderedMetricNames];
+        const currentOrder = [...orderedColumnIds];
         const draggedIndex = currentOrder.indexOf(draggedField);
         if (draggedIndex === -1) return;
 
