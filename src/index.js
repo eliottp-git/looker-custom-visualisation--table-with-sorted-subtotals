@@ -113,6 +113,15 @@ looker.plugins.visualizations.add({
         .is-underline {
           text-decoration: underline !important;
         }
+        .custom-table a,
+        .custom-table a:visited {
+          color: inherit;
+          text-decoration: none;
+        }
+        .custom-table a:hover {
+          cursor: pointer;
+          text-decoration: underline dotted;
+        }
       </style>
       <div class="custom-vis-table-container" id="table-container"></div>
     `;
@@ -1384,7 +1393,9 @@ looker.plugins.visualizations.add({
     // A dashboard viewer cannot save, so their clicks last until reload.
     const self = this;
     container.querySelectorAll("tr.subtotal-row").forEach(tr => {
-      tr.addEventListener("click", () => {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest("a")) return;
+
         const key = tr.getAttribute("data-group-key");
         if (key === null) return;
 
