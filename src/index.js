@@ -268,6 +268,22 @@ looker.plugins.visualizations.add({
       return true;
     };
 
+    // Looker has no hidden-pivot setting for custom visualizations (config.hidden_pivots is
+    // never passed in). Instead, when a pivot column or a single measure x pivot column is
+    // hidden, Looker drops that cell from every detail row in `data`. It leaves the pivot in
+    // queryResponse.pivots, and subtotals_data / totals_data still carry the values, so
+    // only `data` can be used for this check. A genuine null still has the key
+    // ({ value: null }), so it is not mistaken for a hidden column.
+    const isPivotColumnVisible = (measureName, pivotKey) => {
+      // No detail rows means nothing to infer from: keep the column.
+      if (!Array.isArray(data) || data.length === 0) return true;
+      return data.some((row) => {
+        const cell = row && row[measureName];
+        return !!cell && typeof cell === "object" &&
+          Object.prototype.hasOwnProperty.call(cell, pivotKey);
+      });
+    };
+
     const displayColumns = [];
     if (!hasPivots) {
       metrics.forEach((measure) => {
@@ -292,6 +308,7 @@ looker.plugins.visualizations.add({
       pivots.forEach((pivot) => {
         const label = renderPivotLabel(pivot);
         repeatedMetrics.forEach((measure) => {
+          if (!isPivotColumnVisible(measure.name, pivot.key)) return;
           displayColumns.push({
             id: measure.name + "||" + pivot.key,
             measureName: measure.name,

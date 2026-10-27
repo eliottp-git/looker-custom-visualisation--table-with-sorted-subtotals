@@ -29,6 +29,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - One-click revert to the original column order
 - Pivots become real columns: one per measure and pivot value, for however many values the query returns. A table calculation that uses `pivot_index`, `pivot_offset`, `pivot_row`, or `pivot_where` stays a single column after those pivot columns
 - With a pivot, the header has two rows: the pivot value on top (Current, Previous, or whatever came back) and the measure name underneath. **Pivot Value in Brackets** in the Plot tab folds that into one label, such as `Gross Sales (Current)`
+- Hiding works like the native table. **Hide from visualization** on a measure removes it from every pivot. Hiding a pivot value (such as Previous), or a single measure under one pivot value, removes only those columns, and the pivot header drops with them
 - A pivot total column is included when Totals is checked in the Data panel
 - Click a pivot column to sort groups by that column's subtotal. Drag to reorder pivot columns. The choice is saved with the tile
 - Series settings and conditional formatting stay on the measure, so they apply to every pivot column of that measure
