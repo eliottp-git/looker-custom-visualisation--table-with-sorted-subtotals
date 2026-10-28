@@ -446,6 +446,24 @@ looker.plugins.visualizations.add({
       hidden: !hasPivots
     };
 
+    // Hide the two dimension columns from display only. The fields stay in the query,
+    // so grouping, subtotals and sorting keep working.
+    plotOptions.hideLevel1 = {
+      section: "Plot",
+      type: "boolean",
+      label: "Hide Level 1",
+      default: false,
+      order: 7
+    };
+
+    plotOptions.hideLevel2 = {
+      section: "Plot",
+      type: "boolean",
+      label: "Hide Level 2",
+      default: false,
+      order: 8
+    };
+
     // Hidden option to register metricColumnOrder with Looker's configuration store.
     // In Looker visualizations, properties passed via this.trigger('updateConfig')
     // MUST be declared in options so Looker persists and passes them into config on subsequent updateAsync calls.
@@ -1312,6 +1330,11 @@ looker.plugins.visualizations.add({
     const useGroupedHeader = hasRepeatedPivotColumns && !pivotInBrackets;
     const headerRowSpan = useGroupedHeader ? ` rowspan="2"` : "";
 
+    // Display-only flags: the dimension still drives grouping, just not a rendered column.
+    const hideL1 = config.hideLevel1 === true;
+    const hideL2 = config.hideLevel2 === true;
+    const visibleDimCount = (hideL1 ? 0 : 1) + (hideL2 ? 0 : 1);
+
     const columnHeader = (column) => {
       const name = measureLabel(column);
       if (!pivotInBrackets || !column.pivoted) return name;
@@ -1335,7 +1358,8 @@ looker.plugins.visualizations.add({
     let html = `<table class="custom-table"><thead><tr>`;
     
     // Render Dimension Headers
-    [dimensions[0], dimensions[1]].forEach(field => {
+    [dimensions[0], dimensions[1]].forEach((field, i) => {
+      if (i === 0 ? hideL1 : hideL2) return;
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
       html += `<th${headerRowSpan} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
@@ -1386,8 +1410,8 @@ looker.plugins.visualizations.add({
         const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
 
         html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
-                   <td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>
-                   <td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`;
+                   ${hideL1 ? "" : `<td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>`}
+                   ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`}`;
         
         orderedColumns.forEach(column => {
           const styleM = textStyleClass(column.measureName);
@@ -1438,8 +1462,8 @@ looker.plugins.visualizations.add({
         const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
 
         html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
-                   <td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>
-                   <td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`;
+                   ${hideL1 ? "" : `<td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>`}
+                   ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`}`;
         
         orderedColumns.forEach(column => {
           const mCell = measureCell(row, column);
@@ -1455,7 +1479,8 @@ looker.plugins.visualizations.add({
 
     // Render Grand Total dynamically (only if totals exist in query and showTotal is not disabled)
     if (hasTotals && config.showTotal !== false) {
-      html += `<tr class="grand-total-row"><td colspan="2">Total</td>`;
+      // colspan="0" is invalid, so with both dimensions hidden there is no label cell.
+      html += `<tr class="grand-total-row">${visibleDimCount > 0 ? `<td colspan="${visibleDimCount}">Total</td>` : ""}`;
       const nativeTotalsData = queryResponse.totals_data || {};
 
       orderedColumns.forEach(column => {
