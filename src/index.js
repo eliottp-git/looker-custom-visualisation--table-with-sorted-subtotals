@@ -748,11 +748,11 @@ looker.plugins.visualizations.add({
     const staleCfConfigUpdates = {};
 
     const cfPresetDefaults = [
-      { op: "gt", val: 0, bg: "#dcfce7", font: "#166534" }, // Rule 1: Green (> 0)
-      { op: "lt", val: 0, bg: "#fee2e2", font: "#991b1b" }, // Rule 2: Red (< 0)
-      { op: "gt", val: 0, bg: "#fef3c7", font: "#92400e" }, // Rule 3: Amber
-      { op: "gt", val: 0, bg: "#e0f2fe", font: "#0369a1" }, // Rule 4: Blue
-      { op: "gt", val: 0, bg: "#f3e8ff", font: "#6b21a8" }  // Rule 5: Purple
+      { op: "gt", val: 0, bg: "#dcfce7", font: "#009900", useBg: false, useFont: true }, // Rule 1: Green text (> 0)
+      { op: "lt", val: 0, bg: "#fee2e2", font: "#990000", useBg: false, useFont: true }, // Rule 2: Red text (< 0)
+      { op: "gt", val: 0, bg: "#fef3c7", font: "#92400e", useBg: true, useFont: true }, // Rule 3: Amber
+      { op: "gt", val: 0, bg: "#e0f2fe", font: "#0369a1", useBg: true, useFont: true }, // Rule 4: Blue
+      { op: "gt", val: 0, bg: "#f3e8ff", font: "#6b21a8", useBg: true, useFont: true }  // Rule 5: Purple
     ];
 
     let cfOrder = 11;
@@ -867,14 +867,14 @@ looker.plugins.visualizations.add({
         order: cfOrder++
       };
 
-      const hasBg = config[`cf_use_bg_${i}`] !== false;
-      const hasFont = config[`cf_use_font_${i}`] !== false;
+      const hasBg = config[`cf_use_bg_${i}`] ?? preset.useBg;
+      const hasFont = config[`cf_use_font_${i}`] ?? preset.useFont;
 
       cfOptions[`cf_use_bg_${i}`] = {
         section: "Formatting",
         type: "boolean",
         label: `Rule ${i} Color Background`,
-        default: true,
+        default: preset.useBg,
         display_size: "half",
         hidden: !isDetailsVisible,
         order: cfOrder++
@@ -895,7 +895,7 @@ looker.plugins.visualizations.add({
         section: "Formatting",
         type: "boolean",
         label: `Rule ${i} Color Text`,
-        default: true,
+        default: preset.useFont,
         display_size: "half",
         hidden: !isDetailsVisible,
         order: cfOrder++
@@ -931,6 +931,27 @@ looker.plugins.visualizations.add({
         hidden: !isDetailsVisible,
         order: cfOrder++
       };
+
+      // Looker's panel ignores `default` on options registered here: unset booleans
+      // draw as off and unset colors draw empty. Write the preset once so the panel
+      // matches what the table renders. Values the user has already set are kept.
+      if (isRuleVisible) {
+        const ruleSeed = {
+          [`cf_operator_${i}`]: preset.op,
+          [`cf_value_${i}`]: preset.val,
+          [`cf_use_bg_${i}`]: preset.useBg,
+          [`cf_bg_${i}`]: preset.bg,
+          [`cf_use_font_${i}`]: preset.useFont,
+          [`cf_font_${i}`]: preset.font,
+          [`cf_subtotals_${i}`]: true,
+          [`cf_totals_${i}`]: true
+        };
+        for (const [key, value] of Object.entries(ruleSeed)) {
+          if (config[key] === undefined || config[key] === null || config[key] === "") {
+            staleCfConfigUpdates[key] = value;
+          }
+        }
+      }
 
       prevRuleActive = isDetailsVisible;
     }
@@ -1147,19 +1168,18 @@ looker.plugins.visualizations.add({
         }
 
         if (matches) {
-          const useBg = config[`cf_use_bg_${i}`] !== false;
-          const useFont = config[`cf_use_font_${i}`] !== false;
+          const useBg = config[`cf_use_bg_${i}`] ?? defaultPreset.useBg;
+          const useFont = config[`cf_use_font_${i}`] ?? defaultPreset.useFont;
 
+          // null = "don't override", so the cell falls back to the series/row colors
           let bg = null;
           if (useBg) {
-            const rawBg = config[`cf_bg_${i}`];
-            bg = rawBg === "" ? "" : asColor(rawBg, defaultPreset.bg);
+            bg = asColor(config[`cf_bg_${i}`], defaultPreset.bg);
           }
 
           let font = null;
           if (useFont) {
-            const rawFont = config[`cf_font_${i}`];
-            font = rawFont === "" ? "" : asColor(rawFont, defaultPreset.font);
+            font = asColor(config[`cf_font_${i}`], defaultPreset.font);
           }
 
           return { bg, font };
