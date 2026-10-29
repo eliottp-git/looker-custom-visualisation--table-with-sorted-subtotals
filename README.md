@@ -21,6 +21,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - Grand total row, toggleable (shown when the query returns totals)
 - Click a subtotal row to collapse or expand that group. Collapsed groups are saved with the tile, with a one-click revert to the fully expanded view
 - Hide repeated labels on the grouping dimension
+- **Freeze Current Row** (Plot tab, on by default): while scrolling, the current group's subtotal row stays pinned under the header until the next group's subtotal row takes its place. With subtotals off, the first row of each group is pinned instead
 
 **Columns**
 

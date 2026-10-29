@@ -85,6 +85,11 @@ looker.plugins.visualizations.add({
           border-top: 1px solid var(--table-border, #cbd5e1);
           border-bottom: 2px solid var(--table-border, #cbd5e1);
         }
+        .custom-table tr.is-frozen > td {
+          position: sticky;
+          top: var(--frozen-row-top, 0px);
+          z-index: 10;
+        }
         .collapse-chevron {
           display: inline-block;
           width: 12px;
@@ -462,6 +467,14 @@ looker.plugins.visualizations.add({
       label: "Hide Level 2",
       default: false,
       order: 8
+    };
+
+    plotOptions.freezeCurrentRow = {
+      section: "Plot",
+      type: "boolean",
+      label: "Freeze Current Row",
+      default: true,
+      order: 9
     };
 
     // Hidden option to register metricColumnOrder with Looker's configuration store.
@@ -973,8 +986,11 @@ looker.plugins.visualizations.add({
     // Looker draws an unset boolean as off, even when default is true.
     // Subtotals already render in that unset state. Writing true makes the
     // Plot checkbox match the table. An explicit off stays off.
-    if (config.showSubtotals === undefined) {
-      this.trigger("updateConfig", [{ showSubtotals: true }]);
+    const unsetBooleanDefaults = {};
+    if (config.showSubtotals === undefined) unsetBooleanDefaults.showSubtotals = true;
+    if (config.freezeCurrentRow === undefined) unsetBooleanDefaults.freezeCurrentRow = true;
+    if (Object.keys(unsetBooleanDefaults).length > 0) {
+      this.trigger("updateConfig", [unsetBooleanDefaults]);
     }
 
     // 2. DATA PROCESSING & GROUPING
@@ -1355,6 +1371,11 @@ looker.plugins.visualizations.add({
     const hideL2 = config.hideLevel2 === true;
     const visibleDimCount = (hideL1 ? 0 : 1) + (hideL2 ? 0 : 1);
 
+    // Every group's label row is sticky at the same offset. A later row paints over the
+    // earlier one when it reaches the top, so only the current group's row shows.
+    const freezeCurrentRow = config.freezeCurrentRow !== false;
+    const frozenClass = freezeCurrentRow ? " is-frozen" : "";
+
     const columnHeader = (column) => {
       const name = measureLabel(column);
       if (!pivotInBrackets || !column.pivoted) return name;
@@ -1429,7 +1450,7 @@ looker.plugins.visualizations.add({
         const chevron = collapsed ? "&#9654;" : "&#9660;";
         const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
 
-        html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
+        html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}${frozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
                    ${hideL1 ? "" : `<td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>`}
                    ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`}`;
         
@@ -1480,8 +1501,10 @@ looker.plugins.visualizations.add({
         const l1ClassAttr = l1ClassNames ? ` class="${l1ClassNames}"` : '';
         
         const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
+        // With subtotals off, the group's first row is the one that carries the Level 1 value.
+        const detailFrozenClass = !isSubtotalsVisible && rowIndex === 0 ? frozenClass : "";
 
-        html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
+        html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}${detailFrozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
                    ${hideL1 ? "" : `<td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>`}
                    ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`}`;
         
@@ -1532,6 +1555,13 @@ looker.plugins.visualizations.add({
       const firstHeaderRow = container.querySelector("thead tr");
       if (firstHeaderRow) {
         container.style.setProperty("--pivot-header-offset", firstHeaderRow.getBoundingClientRect().height + "px");
+      }
+    }
+
+    if (freezeCurrentRow) {
+      const thead = container.querySelector("thead");
+      if (thead) {
+        container.style.setProperty("--frozen-row-top", thead.getBoundingClientRect().height + "px");
       }
     }
 
