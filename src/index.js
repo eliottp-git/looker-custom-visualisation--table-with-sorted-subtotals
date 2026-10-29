@@ -88,10 +88,22 @@ looker.plugins.visualizations.add({
           border-top: 1px solid var(--table-border, #cbd5e1);
           border-bottom: 2px solid var(--table-border, #cbd5e1);
         }
+        .custom-table .subtotal-row.depth-2 td {
+          border-top: none;
+          border-bottom: 1px solid var(--table-border, #cbd5e1);
+        }
         .custom-table tr.is-frozen > td {
           position: sticky;
           top: var(--frozen-row-top, 0px);
           z-index: 10;
+        }
+        .custom-table tr.is-frozen-l2 > td {
+          position: sticky;
+          top: calc(var(--frozen-row-top, 0px) + var(--frozen-l1-row-height, 0px));
+          z-index: 8;
+        }
+        .custom-table tr.is-frozen-l2.is-stale > td {
+          visibility: hidden;
         }
         .custom-table .freeze-col {
           position: sticky;
@@ -103,8 +115,14 @@ looker.plugins.visualizations.add({
         .custom-table .freeze-l2 {
           left: var(--freeze-l2-left, 0px);
         }
+        .custom-table .freeze-l3 {
+          left: var(--freeze-l3-left, 0px);
+        }
         .custom-table tr.is-frozen > td.freeze-col {
           z-index: 11;
+        }
+        .custom-table tr.is-frozen-l2 > td.freeze-col {
+          z-index: 9;
         }
         .custom-table th.freeze-col {
           z-index: 13;
@@ -119,7 +137,7 @@ looker.plugins.visualizations.add({
           color: #64748b;
           font-size: 9px;
         }
-        .custom-table tr.group-detail.is-collapsed {
+        .custom-table tr.is-hidden {
           display: none;
         }
         .custom-table .grand-total-row {
@@ -180,7 +198,15 @@ looker.plugins.visualizations.add({
     if (dimensions.length < 2 || metrics.length < 1) {
       this.addError({
         title: "Insufficient Fields",
-        message: "This visualization requires at least 2 dimensions (Level 1, Level 2) and 1 measure."
+        message: "This visualization requires 2 or 3 dimensions (Level 1, Level 2, optional Level 3) and 1 measure."
+      });
+      return;
+    }
+
+    if (dimensions.length > 3) {
+      this.addError({
+        title: "Too Many Dimensions",
+        message: "This visualization supports up to 3 dimensions. Remove or hide the extra dimensions."
       });
       return;
     }
@@ -402,7 +428,16 @@ looker.plugins.visualizations.add({
       ? config.secondarySortDirection
       : "";
 
-    const hasCustomSort = sortMetric !== defaultSortMetric || sortDirection !== "desc" || secondarySortDirection !== "";
+    // With 3 dimensions, Level 1 and Level 2 are groups and Level 3 is the detail row.
+    // Shift+click on the Level 2 header then sorts the Level 2 groups alphabetically.
+    const levelCount = dimensions.length;
+    const hasMiddleLevel = levelCount === 3;
+    let middleSortDirection = hasMiddleLevel && ["asc", "desc"].includes(config.middleSortDirection)
+      ? config.middleSortDirection
+      : "";
+
+    const hasCustomSort = sortMetric !== defaultSortMetric || sortDirection !== "desc" ||
+      secondarySortDirection !== "" || middleSortDirection !== "";
 
     // Handle Reset action from the Plot tab toggle: restores column order and every sort.
     if (config.resetColumnOrder) {
@@ -412,6 +447,7 @@ looker.plugins.visualizations.add({
           sortMetric: "",
           sortDirection: "",
           secondarySortDirection: "",
+          middleSortDirection: "",
           resetColumnOrder: false
         }
       ]);
@@ -419,6 +455,7 @@ looker.plugins.visualizations.add({
       sortMetric = defaultSortMetric;
       sortDirection = "desc";
       secondarySortDirection = "";
+      middleSortDirection = "";
     }
 
     const readCollapsedKeys = (value) => {
@@ -452,12 +489,21 @@ looker.plugins.visualizations.add({
     // 1. DYNAMIC OPTIONS CONFIGURATION
     const plotOptions = {
       showSubtotals: { section: "Plot", type: "boolean", label: "Show Subtotals", default: true, order: 1 },
-      hideRepeatedLabels: { section: "Plot", type: "boolean", label: "Hide Repeated Labels", default: false, order: 2 }
+      // Level 2 groups are still sorted by their subtotal when these rows are off.
+      showLevel2Subtotals: {
+        section: "Plot",
+        type: "boolean",
+        label: "Show Level 2 Subtotals",
+        default: true,
+        order: 2,
+        hidden: !hasMiddleLevel || config.showSubtotals === false
+      },
+      hideRepeatedLabels: { section: "Plot", type: "boolean", label: "Hide Repeated Labels", default: false, order: 3 }
     };
 
     // Only expose the "Show Totals" toggle if totals were computed in the query
     if (hasTotals) {
-      plotOptions.showTotal = { section: "Plot", type: "boolean", label: "Show Totals", default: true, order: 3 };
+      plotOptions.showTotal = { section: "Plot", type: "boolean", label: "Show Totals", default: true, order: 4 };
     }
 
     // Expose the revert toggle in Plot tab when columns are reordered or the sort changed
@@ -466,7 +512,7 @@ looker.plugins.visualizations.add({
       type: "boolean",
       label: "Revert Original Column Order & Sorting",
       default: false,
-      order: 4,
+      order: 5,
       hidden: !hasCustomOrder && !hasCustomSort
     };
 
@@ -475,7 +521,7 @@ looker.plugins.visualizations.add({
       type: "boolean",
       label: "Revert to Uncollapsed View",
       default: false,
-      order: 5,
+      order: 6,
       hidden: !hasCollapsedGroups
     };
 
@@ -486,53 +532,42 @@ looker.plugins.visualizations.add({
       type: "boolean",
       label: "Pivot Value in Brackets",
       default: false,
-      order: 6,
+      order: 7,
       hidden: !hasPivots
     };
 
-    // Hide the two dimension columns from display only. The fields stay in the query,
+    // Hide the dimension columns from display only. The fields stay in the query,
     // so grouping, subtotals and sorting keep working.
-    plotOptions.hideLevel1 = {
-      section: "Plot",
-      type: "boolean",
-      label: "Hide Level 1",
-      default: false,
-      order: 7
-    };
-
-    plotOptions.hideLevel2 = {
-      section: "Plot",
-      type: "boolean",
-      label: "Hide Level 2",
-      default: false,
-      order: 8
-    };
+    let plotOrder = 8;
+    for (let level = 1; level <= 3; level++) {
+      plotOptions[`hideLevel${level}`] = {
+        section: "Plot",
+        type: "boolean",
+        label: `Hide Level ${level}`,
+        default: false,
+        order: plotOrder++,
+        hidden: level > levelCount
+      };
+    }
 
     plotOptions.freezeCurrentRow = {
       section: "Plot",
       type: "boolean",
       label: "Freeze Current Row",
       default: true,
-      order: 9
+      order: plotOrder++
     };
 
-    plotOptions.freezeLevel1 = {
-      section: "Plot",
-      type: "boolean",
-      label: "Freeze Level 1",
-      default: false,
-      order: 10,
-      hidden: config.hideLevel1 === true
-    };
-
-    plotOptions.freezeLevel2 = {
-      section: "Plot",
-      type: "boolean",
-      label: "Freeze Level 2",
-      default: false,
-      order: 11,
-      hidden: config.hideLevel2 === true
-    };
+    for (let level = 1; level <= 3; level++) {
+      plotOptions[`freezeLevel${level}`] = {
+        section: "Plot",
+        type: "boolean",
+        label: `Freeze Level ${level}`,
+        default: false,
+        order: plotOrder++,
+        hidden: level > levelCount || config[`hideLevel${level}`] === true
+      };
+    }
 
     // Hidden option to register metricColumnOrder with Looker's configuration store.
     // In Looker visualizations, properties passed via this.trigger('updateConfig')
@@ -551,6 +586,10 @@ looker.plugins.visualizations.add({
         hidden: true
       },
       secondarySortDirection: {
+        type: "string",
+        hidden: true
+      },
+      middleSortDirection: {
         type: "string",
         hidden: true
       },
@@ -786,6 +825,16 @@ looker.plugins.visualizations.add({
         default: "#f1f5f9",
         order: 7
       },
+      level2SubtotalBgColor: {
+        section: "Formatting",
+        type: "string",
+        display: "color",
+        label: "Level 2 Subtotal Background",
+        display_size: "half",
+        default: "#f8fafc",
+        order: 8,
+        hidden: !hasMiddleLevel
+      },
       rowBgColor: {
         section: "Formatting",
         type: "string",
@@ -793,7 +842,7 @@ looker.plugins.visualizations.add({
         label: "Row Background",
         display_size: "half",
         default: "#ffffff",
-        order: 8
+        order: 9
       },
       borderColor: {
         section: "Formatting",
@@ -802,7 +851,7 @@ looker.plugins.visualizations.add({
         label: "Border Color",
         display_size: "half",
         default: "#e0e0e0",
-        order: 9
+        order: 10
       }
     };
 
@@ -814,7 +863,7 @@ looker.plugins.visualizations.add({
         type: "boolean",
         label: "Enable Conditional Formatting",
         default: false,
-        order: 10
+        order: 11
       }
     };
 
@@ -829,7 +878,7 @@ looker.plugins.visualizations.add({
       { op: "gt", val: 0, bg: "#f3e8ff", font: "#6b21a8", useBg: true, useFont: true }  // Rule 5: Purple
     ];
 
-    let cfOrder = 11;
+    let cfOrder = 12;
     let prevRuleActive = isCfMasterEnabled;
 
     for (let i = 1; i <= 5; i++) {
@@ -1050,32 +1099,42 @@ looker.plugins.visualizations.add({
     const unsetBooleanDefaults = {};
     if (config.showSubtotals === undefined) unsetBooleanDefaults.showSubtotals = true;
     if (config.freezeCurrentRow === undefined) unsetBooleanDefaults.freezeCurrentRow = true;
+    if (hasMiddleLevel && config.showLevel2Subtotals === undefined) unsetBooleanDefaults.showLevel2Subtotals = true;
     if (Object.keys(unsetBooleanDefaults).length > 0) {
       this.trigger("updateConfig", [unsetBooleanDefaults]);
     }
 
     // 2. DATA PROCESSING & GROUPING
-    const level1Key = dimensions[0].name;
-    const level2Key = dimensions[1].name;
+    // levelKeys[0] is Level 1. Every level except the last is a group with a subtotal row;
+    // the last level is the detail row.
+    const levelKeys = dimensions.map(d => d.name);
+    const groupDepth = levelCount - 1;
+    const detailKey = levelKeys[levelCount - 1];
+    const isLevelHidden = (level) => config[`hideLevel${level}`] === true;
 
-    // Map native Looker subtotals from queryResponse.subtotals_data by Level 1 value
-    // Looker provides subtotals_data keyed by grouping depth (e.g. "1" for Level 1)
-    const nativeSubtotalsMap = {};
-    const subtotalsArray = queryResponse.subtotals_data && (
-      queryResponse.subtotals_data["1"] ||
-      queryResponse.subtotals_data[1] ||
-      Object.values(queryResponse.subtotals_data)[0]
-    );
+    const dimValue = (row, key) => {
+      const cell = row && row[key];
+      return cell && cell.value !== undefined ? cell.value : null;
+    };
+    // JSON keeps null apart from the text "null", and ["a","b"] apart from ["a,b"].
+    const pathKeyOf = (values) => JSON.stringify(values);
 
-    if (Array.isArray(subtotalsArray)) {
-      subtotalsArray.forEach(subRow => {
-        const keyCell = subRow[level1Key];
-        const keyValue = keyCell ? keyCell.value : null;
-        if (keyValue !== undefined && keyValue !== null) {
-          nativeSubtotalsMap[keyValue] = subRow;
-        }
+    // Looker returns one subtotal list per grouping depth ("1", "2"). Each row names the
+    // dimensions it groups by in $$$__grouping__$$$, so its length is the depth.
+    const nativeSubtotalsByDepth = {};
+    Object.entries(queryResponse.subtotals_data || {}).forEach(([depthKey, subRows]) => {
+      if (!Array.isArray(subRows)) return;
+      subRows.forEach(subRow => {
+        if (!subRow) return;
+        const grouping = subRow["$$$__grouping__$$$"];
+        const depth = Array.isArray(grouping) ? grouping.length : Number(depthKey);
+        if (!(depth >= 1 && depth <= groupDepth)) return;
+        const path = levelKeys.slice(0, depth).map(key => dimValue(subRow, key));
+        if (!nativeSubtotalsByDepth[depth]) nativeSubtotalsByDepth[depth] = {};
+        nativeSubtotalsByDepth[depth][pathKeyOf(path)] = subRow;
       });
-    }
+    });
+    const nativeSubtotalRow = (node) => (nativeSubtotalsByDepth[node.depth] || {})[node.pathKey] || null;
 
     // Pivoted measure cells are maps of pivot key → cell. Unpivoted cells are the cell itself.
     const measureCell = (source, column) => {
@@ -1086,44 +1145,75 @@ looker.plugins.visualizations.add({
       return fieldCell[column.pivotKey] || null;
     };
 
-    const groups = {};
-    const grandTotals = {};
-    orderedColumns.forEach(column => { grandTotals[column.id] = 0; });
+    const zeroTotals = () => {
+      const totals = {};
+      orderedColumns.forEach(column => { totals[column.id] = 0; });
+      return totals;
+    };
+
+    const dimLabelHtml = (cell) => (
+      cell && cell.value !== null && cell.value !== undefined
+        ? LookerCharts.Utils.htmlForCell(cell)
+        : null
+    );
+
+    // Level 1 keys keep the original plain-string format so collapses saved before
+    // Level 3 existed still apply. Deeper groups use the JSON path.
+    const groupKey = (raw) => (raw === null || raw === undefined ? "null" : String(raw));
+
+    // Tree: root → Level 1 nodes → (Level 2 nodes →) detail rows.
+    const root = { depth: 0, path: [], children: [], childIndex: {}, rows: [] };
+    const grandTotals = zeroTotals();
 
     data.forEach(row => {
-      const cat1ValHtml = LookerCharts.Utils.htmlForCell(row[level1Key]);
-      const cat1Raw = row[level1Key].value;
-
-      if (!groups[cat1Raw]) {
-        groups[cat1Raw] = {
-          rawKey: cat1Raw,
-          renderedLabel: cat1ValHtml,
-          totals: {},
-          rows: []
-        };
-        orderedColumns.forEach(column => { groups[cat1Raw].totals[column.id] = 0; });
+      let parent = root;
+      const path = [];
+      const ancestors = [];
+      for (let depth = 1; depth <= groupDepth; depth++) {
+        const key = levelKeys[depth - 1];
+        path.push(dimValue(row, key));
+        const pathKey = pathKeyOf(path);
+        let node = parent.childIndex[pathKey];
+        if (!node) {
+          node = {
+            depth,
+            path: [...path],
+            pathKey,
+            rawValue: path[depth - 1],
+            renderedLabel: dimLabelHtml(row[key]),
+            collapseKey: depth === 1 ? groupKey(path[0]) : pathKey,
+            parent: parent.depth === 0 ? null : parent,
+            totals: zeroTotals(),
+            children: [],
+            childIndex: {},
+            rows: []
+          };
+          parent.childIndex[pathKey] = node;
+          parent.children.push(node);
+        }
+        ancestors.push(node);
+        parent = node;
       }
 
       // Aggregate fallback totals per display column (one pivot value, when pivoted).
       orderedColumns.forEach(column => {
         const cell = measureCell(row, column);
         const val = (cell && cell.value) || 0;
-        groups[cat1Raw].totals[column.id] += val;
+        ancestors.forEach(node => { node.totals[column.id] += val; });
         grandTotals[column.id] += val;
       });
 
-      groups[cat1Raw].rows.push(row);
+      parent.rows.push(row);
     });
 
     // Sort groups by the active column (first column by default, or the header the user last clicked).
     // Prefer Looker's native subtotal for that column; otherwise fall back to the JS-aggregated sum.
-    const getGroupSortValue = (group) => {
-      const nativeRow = nativeSubtotalsMap[group.rawKey];
-      const nativeCell = measureCell(nativeRow, sortColumn);
+    const getGroupSortValue = (node) => {
+      const nativeCell = measureCell(nativeSubtotalRow(node), sortColumn);
       if (nativeCell && typeof nativeCell.value === 'number') {
         return nativeCell.value;
       }
-      return group.totals[sortColumn.id] || 0;
+      return node.totals[sortColumn.id] || 0;
     };
 
     const compareNumeric = (a, b) => {
@@ -1131,10 +1221,6 @@ looker.plugins.visualizations.add({
       return sortDirection === "asc" ? cmp : -cmp;
     };
 
-    const sortedGroups = Object.values(groups).sort((a, b) => compareNumeric(getGroupSortValue(a), getGroupSortValue(b)));
-
-    // Level 1 values become object keys above, so the stored key is that string.
-    const groupKey = (raw) => (raw === null || raw === undefined ? "null" : String(raw));
     const escapeAttr = (value) => String(value)
       .replace(/&/g, "&amp;")
       .replace(/"/g, "&quot;")
@@ -1142,29 +1228,40 @@ looker.plugins.visualizations.add({
 
     const collapsedSet = new Set(expandAllGroups ? [] : readCollapsedKeys(config.collapsedGroups));
 
-    // A hidden Level 2 column has no header to show or change the sort, so it is ignored.
-    const activeSecondarySort = config.hideLevel2 === true ? "" : secondarySortDirection;
-    const level2Text = (row) => {
-      const cell = row[level2Key];
-      const value = cell ? cell.value : null;
-      return value === null || value === undefined ? null : String(value);
-    };
-    // numeric: "Item 2" before "Item 10". sensitivity "base": case and accents do not split ties.
-    const level2Collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    // A hidden column has no header to show or change its alphabetical sort, so it is ignored.
+    const activeSecondarySort = isLevelHidden(levelCount) ? "" : secondarySortDirection;
+    const activeMiddleSort = hasMiddleLevel && !isLevelHidden(2) ? middleSortDirection : "";
 
-    // Sort rows within groups by the same active metric and direction,
-    // or alphabetically by Level 2 when the secondary sort is on.
-    sortedGroups.forEach(group => {
-      group.rows.sort((a, b) => {
-        if (activeSecondarySort) {
-          const textA = level2Text(a);
-          const textB = level2Text(b);
-          // Nulls stay last in both directions.
-          if (textA === null || textB === null) {
-            return (textA === null) - (textB === null);
+    const asText = (value) => (value === null || value === undefined ? null : String(value));
+    // numeric: "Item 2" before "Item 10". sensitivity "base": case and accents do not split ties.
+    const labelCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    const compareText = (textA, textB, direction) => {
+      // Nulls stay last in both directions.
+      if (textA === null || textB === null) {
+        return (textA === null) - (textB === null);
+      }
+      const cmp = labelCollator.compare(textA, textB);
+      return direction === "asc" ? cmp : -cmp;
+    };
+
+    // Level 1 groups always follow the active metric. Level 2 groups follow it too,
+    // unless the Level 2 header was shift-clicked. Detail rows follow the metric,
+    // or the detail header's alphabetical sort.
+    const sortNode = (node) => {
+      if (node.depth < groupDepth) {
+        const childDepth = node.depth + 1;
+        node.children.sort((a, b) => {
+          if (childDepth === 2 && activeMiddleSort) {
+            return compareText(asText(a.rawValue), asText(b.rawValue), activeMiddleSort);
           }
-          const cmp = level2Collator.compare(textA, textB);
-          return activeSecondarySort === "asc" ? cmp : -cmp;
+          return compareNumeric(getGroupSortValue(a), getGroupSortValue(b));
+        });
+        node.children.forEach(sortNode);
+        return;
+      }
+      node.rows.sort((a, b) => {
+        if (activeSecondarySort) {
+          return compareText(asText(dimValue(a, detailKey)), asText(dimValue(b, detailKey)), activeSecondarySort);
         }
         const cellA = measureCell(a, sortColumn);
         const cellB = measureCell(b, sortColumn);
@@ -1172,7 +1269,8 @@ looker.plugins.visualizations.add({
         const valB = (cellB && cellB.value) || 0;
         return compareNumeric(valA, valB);
       });
-    });
+    };
+    sortNode(root);
 
     // 3. APPLY CONFIG & RENDER
     const headerBg = config.headerBgColor || "#f6f8fa";
@@ -1186,6 +1284,7 @@ looker.plugins.visualizations.add({
     );
     const subtotalFont = asColor(config.subtotalFontColor, "#333333");
     const subtotalBg = asColor(config.subtotalBgColor, "#f1f5f9");
+    const level2SubtotalBg = asColor(config.level2SubtotalBgColor, "#f8fafc");
     const rowBg = asColor(config.rowBgColor, "#ffffff");
     const borderColor = asColor(config.borderColor, "#e0e0e0");
 
@@ -1289,9 +1388,10 @@ looker.plugins.visualizations.add({
 
     // Series color wins on that column. An empty series color falls through to the row color.
     // Conditional formatting (if matched) takes highest precedence for that cell.
-    const cellColorCss = (fieldName, kind, rawValue) => {
+    const cellColorCss = (fieldName, kind, rawValue, depth = 1) => {
       const rowFont = kind === "subtotal" ? subtotalFont : "#333333";
-      const rowBackground = kind === "subtotal" ? subtotalBg : (kind === "total" ? "#e2e8f0" : rowBg);
+      const groupBg = depth === 2 ? level2SubtotalBg : subtotalBg;
+      const rowBackground = kind === "subtotal" ? groupBg : (kind === "total" ? "#e2e8f0" : rowBg);
 
       const cf = getCfStyle(fieldName, kind, rawValue);
 
@@ -1311,8 +1411,6 @@ looker.plugins.visualizations.add({
       config[`italic_${fieldName}`] ? "is-italic" : "",
       config[`underline_${fieldName}`] ? "is-underline" : ""
     ].filter(Boolean).join(" ");
-    const styleL1 = textStyleClass(level1Key);
-    const styleL2 = textStyleClass(level2Key);
 
     // Helper functions to retrieve per-column styling declarations
     const getColumnInlineCss = (fieldName, defaultAlign = '') => {
@@ -1449,26 +1547,29 @@ looker.plugins.visualizations.add({
     const headerRowSpan = useGroupedHeader ? ` rowspan="2"` : "";
 
     // Display-only flags: the dimension still drives grouping, just not a rendered column.
-    const hideL1 = config.hideLevel1 === true;
-    const hideL2 = config.hideLevel2 === true;
-    const visibleDimCount = (hideL1 ? 0 : 1) + (hideL2 ? 0 : 1);
+    const allLevels = levelKeys.map((_, i) => i + 1);
+    const visibleLevels = allLevels.filter(level => !isLevelHidden(level));
 
-    // Every group's label row is sticky at the same offset. A later row paints over the
+    // Each depth's label row is sticky at its own offset. A later row paints over the
     // earlier one when it reaches the top, so only the current group's row shows.
     const freezeCurrentRow = config.freezeCurrentRow !== false;
     const frozenClass = freezeCurrentRow ? " is-frozen" : "";
+    const frozenL2Class = freezeCurrentRow ? " is-frozen-l2" : "";
 
-    // Freezing Level 2 also freezes Level 1, like freeze panes in a spreadsheet.
-    const freezeL2 = !hideL2 && config.freezeLevel2 === true;
-    const freezeL1 = !hideL1 && (config.freezeLevel1 === true || freezeL2);
+    const showSubtotals = config.showSubtotals !== false;
+    const showsSubtotalRow = (depth) => showSubtotals && (depth === 1 || config.showLevel2Subtotals !== false);
+
+    // Freezing a level also freezes every visible level before it, like freeze panes in a spreadsheet.
+    const deepestFrozenLevel = visibleLevels.reduce(
+      (deepest, level) => (config[`freezeLevel${level}`] === true ? level : deepest),
+      0
+    );
+    const frozenLevels = visibleLevels.filter(level => level <= deepestFrozenLevel);
     const freezeColClass = (level) => {
-      const frozen = level === 1 ? freezeL1 : freezeL2;
-      if (!frozen) return "";
-      const isEdge = level === 2 || !freezeL2;
+      if (!frozenLevels.includes(level)) return "";
+      const isEdge = level === frozenLevels[frozenLevels.length - 1];
       return `freeze-col freeze-l${level}${isEdge ? " freeze-edge" : ""}`;
     };
-    const freezeL1Class = freezeColClass(1);
-    const freezeL2Class = freezeColClass(2);
     const classAttr = (...names) => {
       const joined = names.filter(Boolean).join(" ");
       return joined ? ` class="${joined}"` : "";
@@ -1497,21 +1598,35 @@ looker.plugins.visualizations.add({
     let html = `<table class="custom-table"><thead><tr>`;
     
     // Render Dimension Headers
-    [dimensions[0], dimensions[1]].forEach((field, i) => {
-      if (i === 0 ? hideL1 : hideL2) return;
+    // Level 1 has no alphabetical sort. The detail column sorts rows within the deepest
+    // subtotal; with 3 levels the Level 2 column sorts its groups within each Level 1 subtotal.
+    const alphaSortHeader = (level) => {
+      if (level === levelCount) {
+        return { className: "detail-sort-header", direction: activeSecondarySort, scope: "within each subtotal" };
+      }
+      if (level === 2) {
+        return { className: "middle-sort-header", direction: activeMiddleSort, scope: "within each Level 1 subtotal" };
+      }
+      return null;
+    };
+
+    visibleLevels.forEach(level => {
+      const field = dimensions[level - 1];
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
-      if (i === 0) {
-        html += `<th${headerRowSpan}${classAttr(freezeL1Class)} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
+      const headerStyle = `background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}`;
+      const alpha = alphaSortHeader(level);
+      if (!alpha) {
+        html += `<th${headerRowSpan}${classAttr(freezeColClass(level))} style="${headerStyle}">${customLabel}</th>`;
         return;
       }
-      const secondaryArrow = activeSecondarySort
-        ? `<span class="sort-indicator is-secondary" aria-hidden="true" style="color: ${headerFont};">${activeSecondarySort === "asc" ? "▲" : "▼"}</span>`
+      const arrow = alpha.direction
+        ? `<span class="sort-indicator is-secondary" aria-hidden="true" style="color: ${headerFont};">${alpha.direction === "asc" ? "▲" : "▼"}</span>`
         : "";
-      const secondaryTitle = activeSecondarySort
-        ? `Sorted ${activeSecondarySort === "asc" ? "A to Z" : "Z to A"} within each subtotal. Shift+click to reverse.`
-        : "Shift+click to sort alphabetically within each subtotal";
-      html += `<th${headerRowSpan}${classAttr("level2-sort-header", freezeL2Class)} data-secondary-sort="${activeSecondarySort}" title="${escapeAttr(secondaryTitle)}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}${secondaryArrow}</th>`;
+      const title = alpha.direction
+        ? `Sorted ${alpha.direction === "asc" ? "A to Z" : "Z to A"} ${alpha.scope}. Shift+click to reverse.`
+        : `Shift+click to sort alphabetically ${alpha.scope}`;
+      html += `<th${headerRowSpan}${classAttr(alpha.className, freezeColClass(level))} data-alpha-sort="${alpha.direction}" title="${escapeAttr(title)}" style="${headerStyle}">${customLabel}${arrow}</th>`;
     });
 
     if (useGroupedHeader) {
@@ -1548,94 +1663,121 @@ looker.plugins.visualizations.add({
     html += `</tr></thead><tbody style="font-size: ${rowFontSize}px;">`;
 
     // Render Rows & Subtotals
-    sortedGroups.forEach(group => {
-      if (config.showSubtotals !== false) {
-        const l1Css = getColumnInlineCss(level1Key);
-        const l2Css = getColumnInlineCss(level2Key);
-        const nativeSubRow = nativeSubtotalsMap[group.rawKey];
+    const levelCss = levelKeys.map(key => getColumnInlineCss(key));
+    const levelTextStyle = levelKeys.map(key => textStyleClass(key));
 
-        const collapsed = collapsedSet.has(groupKey(group.rawKey));
-        const chevron = collapsed ? "&#9654;" : "&#9660;";
-        const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
+    const labelCell = (level, kind, depth, content, extraClass = "") => {
+      if (isLevelHidden(level)) return "";
+      const key = levelKeys[level - 1];
+      return `<td${classAttr(extraClass, levelTextStyle[level - 1], freezeColClass(level))} style="${cellColorCss(key, kind, undefined, depth)} ${levelCss[level - 1]}">${content}</td>`;
+    };
 
-        html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}${frozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
-                   ${hideL1 ? "" : `<td${classAttr(styleL1, freezeL1Class)} style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>`}
-                   ${hideL2 ? "" : `<td${classAttr(styleL2, freezeL2Class)} style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`}`;
-        
-        orderedColumns.forEach(column => {
-          const styleM = textStyleClass(column.measureName);
-          const mCss = getColumnInlineCss(column.measureName, 'right');
+    // A collapse only counts while its subtotal row is shown, since that row is the only way to undo it.
+    const isCollapsedNode = (node) => showsSubtotalRow(node.depth) && collapsedSet.has(node.collapseKey);
 
-          // Check if Looker provided a pre-calculated subtotal cell for this pivot column
-          const nativeCell = nativeSubRow ? measureCell(nativeSubRow, column) : null;
-          let formattedSubtotal;
-          let rawSubtotalVal;
+    // Hide Repeated Labels: an ancestor label shows only on the first rendered row of that ancestor's group.
+    let previousPath = null;
+    const startsGroupAt = (path, depth) => (
+      previousPath === null || pathKeyOf(previousPath.slice(0, depth)) !== pathKeyOf(path.slice(0, depth))
+    );
+    const ancestorLabelCell = (ancestor, path, kind, depth) => {
+      const label = ancestor.renderedLabel || NULL_DISPLAY;
+      if (!config.hideRepeatedLabels) return labelCell(ancestor.depth, kind, depth, label, "indent-cell");
+      return labelCell(ancestor.depth, kind, depth, startsGroupAt(path, ancestor.depth) ? label : "");
+    };
 
-          if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
-            // Use native cell with formatMetricValue (handles custom formatting overrides or defaults to native rendered)
-            formattedSubtotal = formatMetricValue(nativeCell.value, column.measureName, nativeCell);
-            rawSubtotalVal = nativeCell.value;
-          } else {
-            // Fallback to JS-aggregated total
-            formattedSubtotal = formatMetricValue(group.totals[column.id], column.measureName);
-            rawSubtotalVal = group.totals[column.id];
-          }
+    const renderSubtotalRow = (node, chain, l1Index) => {
+      const collapsed = collapsedSet.has(node.collapseKey);
+      const hiddenByAncestor = chain.slice(0, -1).some(isCollapsedNode);
+      const chevron = collapsed ? "&#9654;" : "&#9660;";
+      const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
+      const rowFrozen = node.depth === 1 ? frozenClass : frozenL2Class;
 
-          html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal)} ${mCss}">${formattedSubtotal}</td>`;
-        });
-        html += `</tr>`;
-      }
+      html += `<tr class="subtotal-row depth-${node.depth}${collapsed ? " is-collapsed" : ""}${hiddenByAncestor ? " is-hidden" : ""}${rowFrozen}" data-group-key="${escapeAttr(node.collapseKey)}" data-l1-index="${l1Index}" title="${collapseTitle}">`;
 
-      group.rows.forEach((row, rowIndex) => {
-        const cat2Cell = row[level2Key];
-        const cat2ValHtml = (cat2Cell && cat2Cell.value !== null && cat2Cell.value !== undefined)
-          ? LookerCharts.Utils.htmlForCell(cat2Cell)
-          : NULL_DISPLAY;
-        const l1Css = getColumnInlineCss(level1Key);
-        const l2Css = getColumnInlineCss(level2Key);
+      allLevels.forEach(level => {
+        if (level < node.depth) {
+          html += ancestorLabelCell(chain[level - 1], node.path, "subtotal", node.depth);
+        } else if (level === node.depth) {
+          html += labelCell(level, "subtotal", node.depth, `<span class="collapse-chevron" aria-hidden="true">${chevron}</span>${node.renderedLabel || NULL_DISPLAY}`);
+        } else if (level === node.depth + 1) {
+          html += labelCell(level, "subtotal", node.depth, `<em>Subtotal</em>`);
+        } else {
+          html += labelCell(level, "subtotal", node.depth, "");
+        }
+      });
 
-        const isSubtotalsVisible = config.showSubtotals !== false;
-        let l1Content = '';
-        let l1IndentClass = '';
+      const nativeSubRow = nativeSubtotalRow(node);
+      orderedColumns.forEach(column => {
+        const styleM = textStyleClass(column.measureName);
+        const mCss = getColumnInlineCss(column.measureName, 'right');
 
-        if (!config.hideRepeatedLabels) {
-          l1Content = group.renderedLabel || NULL_DISPLAY;
-          l1IndentClass = 'indent-cell';
-        } else if (!isSubtotalsVisible && rowIndex === 0) {
-          l1Content = group.renderedLabel || NULL_DISPLAY;
+        // Check if Looker provided a pre-calculated subtotal cell for this pivot column
+        const nativeCell = nativeSubRow ? measureCell(nativeSubRow, column) : null;
+        let formattedSubtotal;
+        let rawSubtotalVal;
+
+        if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
+          // Use native cell with formatMetricValue (handles custom formatting overrides or defaults to native rendered)
+          formattedSubtotal = formatMetricValue(nativeCell.value, column.measureName, nativeCell);
+          rawSubtotalVal = nativeCell.value;
+        } else {
+          // Fallback to JS-aggregated total
+          formattedSubtotal = formatMetricValue(node.totals[column.id], column.measureName);
+          rawSubtotalVal = node.totals[column.id];
         }
 
-        const l1ClassAttr = classAttr(l1IndentClass, styleL1, freezeL1Class);
-        
-        const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
-        // With subtotals off, the group's first row is the one that carries the Level 1 value.
-        const detailFrozenClass = !isSubtotalsVisible && rowIndex === 0 ? frozenClass : "";
-
-        html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}${detailFrozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
-                   ${hideL1 ? "" : `<td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>`}
-                   ${hideL2 ? "" : `<td${classAttr(styleL2, freezeL2Class)} style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`}`;
-        
-        orderedColumns.forEach(column => {
-          const mCell = measureCell(row, column);
-          const rawRowVal = mCell ? mCell.value : undefined;
-          const mFormatted = formatMetricValue(rawRowVal, column.measureName, mCell);
-          const styleM = textStyleClass(column.measureName);
-          const mCss = getColumnInlineCss(column.measureName, 'right');
-          html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
-        });
-        html += `</tr>`;
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${formattedSubtotal}</td>`;
       });
-    });
+      html += `</tr>`;
+      previousPath = node.path;
+    };
+
+    const renderDetailRow = (row, leaf, chain) => {
+      const hiddenByAncestor = chain.some(isCollapsedNode);
+      // With subtotals off, the first row of each Level 1 group is the one that carries its value.
+      const detailFrozenClass = !showSubtotals && startsGroupAt(leaf.path, 1) ? frozenClass : "";
+
+      html += `<tr class="group-detail${hiddenByAncestor ? " is-hidden" : ""}${detailFrozenClass}" data-group-key="${escapeAttr(leaf.collapseKey)}">`;
+      chain.forEach(ancestor => {
+        html += ancestorLabelCell(ancestor, leaf.path, "detail", 1);
+      });
+      html += labelCell(levelCount, "detail", 1, dimLabelHtml(row[detailKey]) || NULL_DISPLAY);
+
+      orderedColumns.forEach(column => {
+        const mCell = measureCell(row, column);
+        const rawRowVal = mCell ? mCell.value : undefined;
+        const mFormatted = formatMetricValue(rawRowVal, column.measureName, mCell);
+        const styleM = textStyleClass(column.measureName);
+        const mCss = getColumnInlineCss(column.measureName, 'right');
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
+      });
+      html += `</tr>`;
+      previousPath = leaf.path;
+    };
+
+    const renderNode = (node, parentChain, l1Index) => {
+      const chain = [...parentChain, node];
+      if (showsSubtotalRow(node.depth)) renderSubtotalRow(node, chain, l1Index);
+      if (node.depth < groupDepth) {
+        node.children.forEach(child => renderNode(child, chain, l1Index));
+      } else {
+        node.rows.forEach(row => renderDetailRow(row, node, chain));
+      }
+    };
+    root.children.forEach((node, l1Index) => renderNode(node, [], l1Index));
 
     // Render Grand Total dynamically (only if totals exist in query and showTotal is not disabled)
     if (hasTotals && config.showTotal !== false) {
-      // colspan="0" is invalid, so with both dimensions hidden there is no label cell.
+      // colspan="0" is invalid, so with every dimension hidden there is no label cell.
       let totalLabelCells = "";
-      if (visibleDimCount === 2 && (freezeL1 || freezeL2)) {
-        // A cell spanning both columns would stick as one block, wider than the frozen area.
-        totalLabelCells = `<td${classAttr(freezeL1Class)}>Total</td><td${classAttr(freezeL2Class)}></td>`;
-      } else if (visibleDimCount > 0) {
-        totalLabelCells = `<td colspan="${visibleDimCount}"${classAttr(hideL1 ? freezeL2Class : freezeL1Class)}>Total</td>`;
+      if (visibleLevels.length > 1 && frozenLevels.length > 0) {
+        // A cell spanning several columns would stick as one block, wider than the frozen area.
+        totalLabelCells = visibleLevels
+          .map((level, i) => `<td${classAttr(freezeColClass(level))}>${i === 0 ? "Total" : ""}</td>`)
+          .join("");
+      } else if (visibleLevels.length > 0) {
+        totalLabelCells = `<td colspan="${visibleLevels.length}"${classAttr(freezeColClass(visibleLevels[0]))}>Total</td>`;
       }
       html += `<tr class="grand-total-row">${totalLabelCells}`;
       const nativeTotalsData = queryResponse.totals_data || {};
@@ -1672,30 +1814,82 @@ looker.plugins.visualizations.add({
       }
     }
 
+    let frozenRowTop = 0;
     if (freezeCurrentRow) {
       const thead = container.querySelector("thead");
       if (thead) {
-        container.style.setProperty("--frozen-row-top", thead.getBoundingClientRect().height + "px");
+        frozenRowTop = thead.getBoundingClientRect().height;
+        container.style.setProperty("--frozen-row-top", frozenRowTop + "px");
+      }
+      // Level 2 subtotal rows stick just below the Level 1 subtotal row.
+      const firstL1Row = container.querySelector("tr.subtotal-row.depth-1");
+      if (firstL1Row) {
+        container.style.setProperty("--frozen-l1-row-height", firstL1Row.getBoundingClientRect().height + "px");
       }
     }
 
-    // The previous render's header cell is gone, so its observer has nothing left to watch.
+    // A stuck Level 2 row stays at its offset until a later sticky row paints over it.
+    // When the next Level 1 group shows no Level 2 rows (collapsed), the previous group's
+    // Level 2 row would stay visible under it, so rows from earlier groups are hidden.
+    if (this._stickyScrollHandler) {
+      container.removeEventListener("scroll", this._stickyScrollHandler);
+      this._stickyScrollHandler = null;
+    }
+    const l2StickyRows = freezeCurrentRow ? [...container.querySelectorAll("tr.subtotal-row.depth-2")] : [];
+    if (l2StickyRows.length > 0) {
+      const l1Rows = [...container.querySelectorAll("tr.subtotal-row.depth-1")];
+      let currentL1Index = null;
+      let frameRequested = false;
+      const updateStaleRows = () => {
+        frameRequested = false;
+        const containerRect = container.getBoundingClientRect();
+        // A tile rendered while hidden (e.g. another dashboard tab) has no layout yet.
+        if (containerRect.height === 0) return;
+        // The row box keeps its place in the flow; only its cells stick.
+        const stickyLine = containerRect.top + frozenRowTop + 1;
+        let index = -1;
+        for (const tr of l1Rows) {
+          if (tr.getBoundingClientRect().top > stickyLine) break;
+          index = Number(tr.getAttribute("data-l1-index"));
+        }
+        if (index === currentL1Index) return;
+        currentL1Index = index;
+        l2StickyRows.forEach(tr => {
+          tr.classList.toggle("is-stale", Number(tr.getAttribute("data-l1-index")) < index);
+        });
+      };
+      this._stickyScrollHandler = () => {
+        if (frameRequested) return;
+        frameRequested = true;
+        requestAnimationFrame(updateStaleRows);
+      };
+      container.addEventListener("scroll", this._stickyScrollHandler, { passive: true });
+      updateStaleRows();
+    }
+
+    // The previous render's header cells are gone, so its observer has nothing left to watch.
     if (this._freezeObserver) {
       this._freezeObserver.disconnect();
       this._freezeObserver = null;
     }
-    const level1Header = freezeL1 && freezeL2 ? container.querySelector("th.freeze-l1") : null;
-    if (level1Header) {
-      const setLevel2Offset = () => {
-        container.style.setProperty("--freeze-l2-left", level1Header.getBoundingClientRect().width + "px");
+    // Each frozen column starts where the frozen columns before it end.
+    [2, 3].forEach(level => container.style.removeProperty(`--freeze-l${level}-left`));
+    const frozenHeaders = frozenLevels
+      .map(level => ({ level, th: container.querySelector(`thead th.freeze-l${level}`) }))
+      .filter(entry => entry.th);
+    if (frozenHeaders.length > 1) {
+      const setFreezeOffsets = () => {
+        let left = 0;
+        frozenHeaders.forEach(({ level, th }) => {
+          if (level > 1) container.style.setProperty(`--freeze-l${level}-left`, left + "px");
+          left += th.getBoundingClientRect().width;
+        });
       };
-      setLevel2Offset();
+      setFreezeOffsets();
       if (typeof ResizeObserver !== "undefined") {
-        this._freezeObserver = new ResizeObserver(setLevel2Offset);
-        this._freezeObserver.observe(level1Header);
+        this._freezeObserver = new ResizeObserver(setFreezeOffsets);
+        frozenHeaders.forEach(({ th }) => this._freezeObserver.observe(th));
       }
-    } else {
-      container.style.removeProperty("--freeze-l2-left");
     }
 
     // A click updates viz config the same way a sort click does.
@@ -1719,20 +1913,25 @@ looker.plugins.visualizations.add({
       });
     });
 
-    const level2Header = container.querySelector("th.level2-sort-header");
-    if (level2Header) {
+    const alphaSortConfigKeys = {
+      "detail-sort-header": "secondarySortDirection",
+      "middle-sort-header": "middleSortDirection"
+    };
+    Object.entries(alphaSortConfigKeys).forEach(([className, configKey]) => {
+      const header = container.querySelector(`th.${className}`);
+      if (!header) return;
       // Shift+mousedown would otherwise extend the browser's text selection.
-      level2Header.addEventListener("mousedown", (e) => {
+      header.addEventListener("mousedown", (e) => {
         if (e.shiftKey) e.preventDefault();
       });
-      level2Header.addEventListener("click", (e) => {
+      header.addEventListener("click", (e) => {
         if (!e.shiftKey) return;
-        const current = level2Header.getAttribute("data-secondary-sort");
+        const current = header.getAttribute("data-alpha-sort");
         self.trigger("updateConfig", [
-          { secondarySortDirection: current === "asc" ? "desc" : "asc" }
+          { [configKey]: current === "asc" ? "desc" : "asc" }
         ]);
       });
-    }
+    });
 
     // 4. ATTACH DRAG & DROP REORDERING LISTENERS
     const metricHeaders = container.querySelectorAll("th.draggable-metric");
@@ -1776,7 +1975,8 @@ looker.plugins.visualizations.add({
           {
             sortMetric: fieldName,
             sortDirection: nextDirection,
-            secondarySortDirection: ""
+            secondarySortDirection: "",
+            middleSortDirection: ""
           }
         ]);
       });
