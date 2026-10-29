@@ -74,6 +74,9 @@ looker.plugins.visualizations.add({
           font-size: 9px;
           vertical-align: middle;
         }
+        .sort-indicator.is-secondary {
+          opacity: 0.4;
+        }
         .custom-table .number {
           text-align: right;
         }
@@ -386,15 +389,36 @@ looker.plugins.visualizations.add({
 
     const hasCustomOrder = orderedColumnIds.some((name, idx) => name !== defaultColumnIds[idx]);
 
-    // Handle Reset action from the Plot tab toggle
+    // Sort column: first display column by default (first pivot of the first measure when pivoted).
+    // A header click stores that column id and only re-sorts the existing result.
+    const defaultSortMetric = defaultColumnIds[0];
+    let sortMetric = (typeof config.sortMetric === "string" && defaultColumnIds.includes(config.sortMetric))
+      ? config.sortMetric
+      : defaultSortMetric;
+    let sortDirection = config.sortDirection === "asc" ? "asc" : "desc";
+    // Shift+click on the Level 2 header: rows inside each group sort by Level 2 label
+    // instead of the active metric. Group order still follows the active metric.
+    let secondarySortDirection = ["asc", "desc"].includes(config.secondarySortDirection)
+      ? config.secondarySortDirection
+      : "";
+
+    const hasCustomSort = sortMetric !== defaultSortMetric || sortDirection !== "desc" || secondarySortDirection !== "";
+
+    // Handle Reset action from the Plot tab toggle: restores column order and every sort.
     if (config.resetColumnOrder) {
       this.trigger('updateConfig', [
         {
           metricColumnOrder: "",
+          sortMetric: "",
+          sortDirection: "",
+          secondarySortDirection: "",
           resetColumnOrder: false
         }
       ]);
       orderedColumnIds = [...defaultColumnIds];
+      sortMetric = defaultSortMetric;
+      sortDirection = "desc";
+      secondarySortDirection = "";
     }
 
     const readCollapsedKeys = (value) => {
@@ -423,13 +447,6 @@ looker.plugins.visualizations.add({
 
     const orderedColumns = orderedColumnIds.map(id => columnById[id]).filter(Boolean);
 
-    // Sort column: first display column by default (first pivot of the first measure when pivoted).
-    // A header click stores that column id and only re-sorts the existing result.
-    const defaultSortMetric = defaultColumnIds[0];
-    const sortMetric = (typeof config.sortMetric === "string" && defaultColumnIds.includes(config.sortMetric))
-      ? config.sortMetric
-      : defaultSortMetric;
-    const sortDirection = config.sortDirection === "asc" ? "asc" : "desc";
     const sortColumn = columnById[sortMetric] || orderedColumns[0];
 
     // 1. DYNAMIC OPTIONS CONFIGURATION
@@ -443,14 +460,14 @@ looker.plugins.visualizations.add({
       plotOptions.showTotal = { section: "Plot", type: "boolean", label: "Show Totals", default: true, order: 3 };
     }
 
-    // Expose "Revert Original Column Order" toggle in Plot tab when columns are reordered
+    // Expose the revert toggle in Plot tab when columns are reordered or the sort changed
     plotOptions.resetColumnOrder = {
       section: "Plot",
       type: "boolean",
-      label: "Revert Original Column Order",
+      label: "Revert Original Column Order & Sorting",
       default: false,
       order: 4,
-      hidden: !hasCustomOrder
+      hidden: !hasCustomOrder && !hasCustomSort
     };
 
     plotOptions.resetCollapsedGroups = {
@@ -530,6 +547,10 @@ looker.plugins.visualizations.add({
         hidden: true
       },
       sortDirection: {
+        type: "string",
+        hidden: true
+      },
+      secondarySortDirection: {
         type: "string",
         hidden: true
       },
@@ -1121,9 +1142,30 @@ looker.plugins.visualizations.add({
 
     const collapsedSet = new Set(expandAllGroups ? [] : readCollapsedKeys(config.collapsedGroups));
 
-    // Sort rows within groups by the same active metric and direction
+    // A hidden Level 2 column has no header to show or change the sort, so it is ignored.
+    const activeSecondarySort = config.hideLevel2 === true ? "" : secondarySortDirection;
+    const level2Text = (row) => {
+      const cell = row[level2Key];
+      const value = cell ? cell.value : null;
+      return value === null || value === undefined ? null : String(value);
+    };
+    // numeric: "Item 2" before "Item 10". sensitivity "base": case and accents do not split ties.
+    const level2Collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+    // Sort rows within groups by the same active metric and direction,
+    // or alphabetically by Level 2 when the secondary sort is on.
     sortedGroups.forEach(group => {
       group.rows.sort((a, b) => {
+        if (activeSecondarySort) {
+          const textA = level2Text(a);
+          const textB = level2Text(b);
+          // Nulls stay last in both directions.
+          if (textA === null || textB === null) {
+            return (textA === null) - (textB === null);
+          }
+          const cmp = level2Collator.compare(textA, textB);
+          return activeSecondarySort === "asc" ? cmp : -cmp;
+        }
         const cellA = measureCell(a, sortColumn);
         const cellB = measureCell(b, sortColumn);
         const valA = (cellA && cellA.value) || 0;
@@ -1459,7 +1501,17 @@ looker.plugins.visualizations.add({
       if (i === 0 ? hideL1 : hideL2) return;
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
-      html += `<th${headerRowSpan}${classAttr(i === 0 ? freezeL1Class : freezeL2Class)} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
+      if (i === 0) {
+        html += `<th${headerRowSpan}${classAttr(freezeL1Class)} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
+        return;
+      }
+      const secondaryArrow = activeSecondarySort
+        ? `<span class="sort-indicator is-secondary" aria-hidden="true" style="color: ${headerFont};">${activeSecondarySort === "asc" ? "▲" : "▼"}</span>`
+        : "";
+      const secondaryTitle = activeSecondarySort
+        ? `Sorted ${activeSecondarySort === "asc" ? "A to Z" : "Z to A"} within each subtotal. Shift+click to reverse.`
+        : "Shift+click to sort alphabetically within each subtotal";
+      html += `<th${headerRowSpan}${classAttr("level2-sort-header", freezeL2Class)} data-secondary-sort="${activeSecondarySort}" title="${escapeAttr(secondaryTitle)}" style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}${secondaryArrow}</th>`;
     });
 
     if (useGroupedHeader) {
@@ -1667,6 +1719,21 @@ looker.plugins.visualizations.add({
       });
     });
 
+    const level2Header = container.querySelector("th.level2-sort-header");
+    if (level2Header) {
+      // Shift+mousedown would otherwise extend the browser's text selection.
+      level2Header.addEventListener("mousedown", (e) => {
+        if (e.shiftKey) e.preventDefault();
+      });
+      level2Header.addEventListener("click", (e) => {
+        if (!e.shiftKey) return;
+        const current = level2Header.getAttribute("data-secondary-sort");
+        self.trigger("updateConfig", [
+          { secondarySortDirection: current === "asc" ? "desc" : "asc" }
+        ]);
+      });
+    }
+
     // 4. ATTACH DRAG & DROP REORDERING LISTENERS
     const metricHeaders = container.querySelectorAll("th.draggable-metric");
     let draggedField = null;
@@ -1708,7 +1775,8 @@ looker.plugins.visualizations.add({
         self.trigger("updateConfig", [
           {
             sortMetric: fieldName,
-            sortDirection: nextDirection
+            sortDirection: nextDirection,
+            secondarySortDirection: ""
           }
         ]);
       });
