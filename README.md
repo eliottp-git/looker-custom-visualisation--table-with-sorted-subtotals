@@ -7,7 +7,7 @@ Looker’s **Table (Next)** can show subtotals, but it cannot sort by them. With
 This visualization groups the query, computes subtotals, then sorts:
 
 1. Top-level groups by the subtotal of the metric (largest first).
-2. Detail rows inside each group by that same metric.
+2. Detail rows inside each group by that same metric, or alphabetically by the detail dimension.
 
 Column order, labels, widths, alignment, bold, and number formats stay under your control, the same way they do on the native table.
 
@@ -17,6 +17,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 
 - Groups sorted by a metric subtotal, largest first by default
 - Click a metric header to sort by that column; click again to reverse the direction. The choice is saved with the tile
+- Shift+click the Level 2 header to sort detail rows alphabetically within each subtotal (Shift+click again to reverse). A lighter arrow marks it; a metric header click clears it
 - Subtotal rows, on by default and toggleable from the Plot tab
 - Grand total row, toggleable (shown when the query returns totals)
 - Click a subtotal row to collapse or expand that group. Collapsed groups are saved with the tile, with a one-click revert to the fully expanded view
@@ -27,7 +28,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 
 - Drag-and-drop reordering of metric columns
 - Column order saved with the tile (survives reloads and dashboard saves)
-- One-click revert to the original column order
+- One-click revert to the original column order and sorting
 - Pivots become real columns: one per measure and pivot value, for however many values the query returns. A table calculation that uses `pivot_index`, `pivot_offset`, `pivot_row`, or `pivot_where` stays a single column after those pivot columns
 - With a pivot, the header has two rows: the pivot value on top (Current, Previous, or whatever came back) and the measure name underneath. **Pivot Value in Brackets** in the Plot tab folds that into one label, such as `Gross Sales (Current)`
 - Hiding works like the native table. **Hide from visualization** on a measure removes it from every pivot. Hiding a pivot value (such as Previous), or a single measure under one pivot value, removes only those columns, and the pivot header drops with them
