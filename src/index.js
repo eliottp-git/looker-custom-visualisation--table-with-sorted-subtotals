@@ -90,6 +90,25 @@ looker.plugins.visualizations.add({
           top: var(--frozen-row-top, 0px);
           z-index: 10;
         }
+        .custom-table .freeze-col {
+          position: sticky;
+          z-index: 5;
+        }
+        .custom-table .freeze-l1 {
+          left: 0;
+        }
+        .custom-table .freeze-l2 {
+          left: var(--freeze-l2-left, 0px);
+        }
+        .custom-table tr.is-frozen > td.freeze-col {
+          z-index: 11;
+        }
+        .custom-table th.freeze-col {
+          z-index: 13;
+        }
+        .custom-table .freeze-edge {
+          box-shadow: inset -1px 0 0 var(--table-border, #e0e0e0), 4px 0 4px -2px rgba(0, 0, 0, 0.12);
+        }
         .collapse-chevron {
           display: inline-block;
           width: 12px;
@@ -104,6 +123,9 @@ looker.plugins.visualizations.add({
           background-color: #e2e8f0;
           font-weight: bold;
           border-top: 2px solid #64748b;
+        }
+        .custom-table .grand-total-row > td {
+          background-color: #e2e8f0;
         }
         .custom-table .indent-cell {
           padding-left: 24px;
@@ -475,6 +497,24 @@ looker.plugins.visualizations.add({
       label: "Freeze Current Row",
       default: true,
       order: 9
+    };
+
+    plotOptions.freezeLevel1 = {
+      section: "Plot",
+      type: "boolean",
+      label: "Freeze Level 1",
+      default: false,
+      order: 10,
+      hidden: config.hideLevel1 === true
+    };
+
+    plotOptions.freezeLevel2 = {
+      section: "Plot",
+      type: "boolean",
+      label: "Freeze Level 2",
+      default: false,
+      order: 11,
+      hidden: config.hideLevel2 === true
     };
 
     // Hidden option to register metricColumnOrder with Looker's configuration store.
@@ -1376,6 +1416,22 @@ looker.plugins.visualizations.add({
     const freezeCurrentRow = config.freezeCurrentRow !== false;
     const frozenClass = freezeCurrentRow ? " is-frozen" : "";
 
+    // Freezing Level 2 also freezes Level 1, like freeze panes in a spreadsheet.
+    const freezeL2 = !hideL2 && config.freezeLevel2 === true;
+    const freezeL1 = !hideL1 && (config.freezeLevel1 === true || freezeL2);
+    const freezeColClass = (level) => {
+      const frozen = level === 1 ? freezeL1 : freezeL2;
+      if (!frozen) return "";
+      const isEdge = level === 2 || !freezeL2;
+      return `freeze-col freeze-l${level}${isEdge ? " freeze-edge" : ""}`;
+    };
+    const freezeL1Class = freezeColClass(1);
+    const freezeL2Class = freezeColClass(2);
+    const classAttr = (...names) => {
+      const joined = names.filter(Boolean).join(" ");
+      return joined ? ` class="${joined}"` : "";
+    };
+
     const columnHeader = (column) => {
       const name = measureLabel(column);
       if (!pivotInBrackets || !column.pivoted) return name;
@@ -1403,7 +1459,7 @@ looker.plugins.visualizations.add({
       if (i === 0 ? hideL1 : hideL2) return;
       const customLabel = config[`label_${field.name}`] || field.label_short || field.label;
       const colCss = getHeaderInlineCss(field.name, 'left');
-      html += `<th${headerRowSpan} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
+      html += `<th${headerRowSpan}${classAttr(i === 0 ? freezeL1Class : freezeL2Class)} style="background-color: ${headerBg}; color: ${headerFont}; font-size: ${headerFontSize}px; ${borderMatchCss(field.name)} ${colCss}">${customLabel}</th>`;
     });
 
     if (useGroupedHeader) {
@@ -1451,8 +1507,8 @@ looker.plugins.visualizations.add({
         const collapseTitle = collapsed ? "Click to expand" : "Click to collapse";
 
         html += `<tr class="subtotal-row${collapsed ? " is-collapsed" : ""}${frozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}" title="${collapseTitle}">
-                   ${hideL1 ? "" : `<td class="${styleL1}" style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>`}
-                   ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`}`;
+                   ${hideL1 ? "" : `<td${classAttr(styleL1, freezeL1Class)} style="${cellColorCss(level1Key, "subtotal")} ${l1Css}"><span class="collapse-chevron" aria-hidden="true">${chevron}</span>${group.renderedLabel || NULL_DISPLAY}</td>`}
+                   ${hideL2 ? "" : `<td${classAttr(styleL2, freezeL2Class)} style="${cellColorCss(level2Key, "subtotal")} ${l2Css}"><em>Subtotal</em></td>`}`;
         
         orderedColumns.forEach(column => {
           const styleM = textStyleClass(column.measureName);
@@ -1497,8 +1553,7 @@ looker.plugins.visualizations.add({
           l1Content = group.renderedLabel || NULL_DISPLAY;
         }
 
-        const l1ClassNames = [l1IndentClass, styleL1].filter(Boolean).join(' ');
-        const l1ClassAttr = l1ClassNames ? ` class="${l1ClassNames}"` : '';
+        const l1ClassAttr = classAttr(l1IndentClass, styleL1, freezeL1Class);
         
         const detailCollapsed = isSubtotalsVisible && collapsedSet.has(groupKey(group.rawKey));
         // With subtotals off, the group's first row is the one that carries the Level 1 value.
@@ -1506,7 +1561,7 @@ looker.plugins.visualizations.add({
 
         html += `<tr class="group-detail${detailCollapsed ? " is-collapsed" : ""}${detailFrozenClass}" data-group-key="${escapeAttr(groupKey(group.rawKey))}">
                    ${hideL1 ? "" : `<td${l1ClassAttr} style="${cellColorCss(level1Key, "detail")} ${l1Css}">${l1Content}</td>`}
-                   ${hideL2 ? "" : `<td class="${styleL2}" style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`}`;
+                   ${hideL2 ? "" : `<td${classAttr(styleL2, freezeL2Class)} style="${cellColorCss(level2Key, "detail")} ${l2Css}">${cat2ValHtml}</td>`}`;
         
         orderedColumns.forEach(column => {
           const mCell = measureCell(row, column);
@@ -1523,7 +1578,14 @@ looker.plugins.visualizations.add({
     // Render Grand Total dynamically (only if totals exist in query and showTotal is not disabled)
     if (hasTotals && config.showTotal !== false) {
       // colspan="0" is invalid, so with both dimensions hidden there is no label cell.
-      html += `<tr class="grand-total-row">${visibleDimCount > 0 ? `<td colspan="${visibleDimCount}">Total</td>` : ""}`;
+      let totalLabelCells = "";
+      if (visibleDimCount === 2 && (freezeL1 || freezeL2)) {
+        // A cell spanning both columns would stick as one block, wider than the frozen area.
+        totalLabelCells = `<td${classAttr(freezeL1Class)}>Total</td><td${classAttr(freezeL2Class)}></td>`;
+      } else if (visibleDimCount > 0) {
+        totalLabelCells = `<td colspan="${visibleDimCount}"${classAttr(hideL1 ? freezeL2Class : freezeL1Class)}>Total</td>`;
+      }
+      html += `<tr class="grand-total-row">${totalLabelCells}`;
       const nativeTotalsData = queryResponse.totals_data || {};
 
       orderedColumns.forEach(column => {
@@ -1563,6 +1625,25 @@ looker.plugins.visualizations.add({
       if (thead) {
         container.style.setProperty("--frozen-row-top", thead.getBoundingClientRect().height + "px");
       }
+    }
+
+    // The previous render's header cell is gone, so its observer has nothing left to watch.
+    if (this._freezeObserver) {
+      this._freezeObserver.disconnect();
+      this._freezeObserver = null;
+    }
+    const level1Header = freezeL1 && freezeL2 ? container.querySelector("th.freeze-l1") : null;
+    if (level1Header) {
+      const setLevel2Offset = () => {
+        container.style.setProperty("--freeze-l2-left", level1Header.getBoundingClientRect().width + "px");
+      };
+      setLevel2Offset();
+      if (typeof ResizeObserver !== "undefined") {
+        this._freezeObserver = new ResizeObserver(setLevel2Offset);
+        this._freezeObserver.observe(level1Header);
+      }
+    } else {
+      container.style.removeProperty("--freeze-l2-left");
     }
 
     // A click updates viz config the same way a sort click does.

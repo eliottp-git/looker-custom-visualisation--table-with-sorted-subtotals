@@ -33,6 +33,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - Hiding works like the native table. **Hide from visualization** on a measure removes it from every pivot. Hiding a pivot value (such as Previous), or a single measure under one pivot value, removes only those columns, and the pivot header drops with them
 - A pivot total column is included when Totals is checked in the Data panel
 - Click a pivot column to sort groups by that column's subtotal. Drag to reorder pivot columns. The choice is saved with the tile
+- **Freeze Level 1** and **Freeze Level 2** (Plot tab, off by default) keep the dimension columns pinned on the left while scrolling sideways. Freezing Level 2 also freezes Level 1, like freeze panes in a spreadsheet. Only measure columns can be dragged, so the dimensions always stay first and freezing never conflicts with column reordering
 - Series settings and conditional formatting stay on the measure, so they apply to every pivot column of that measure
 - Per-series label, width (px), text alignment, bold, italic, underline, font color, background color, and number format (currencies, decimals, percent, ID)
 - Optional border color matched to the series background
