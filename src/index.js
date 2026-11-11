@@ -19,6 +19,10 @@ const TREND_PAIRS = {
 const TREND_POS_COLOR = "#2e7d32";
 const TREND_NEG_COLOR = "#c62828";
 
+// Cell Visualization gradient stops. Colors 1 and 2 are always used; 3 to 5 are added one at a time.
+const CV_MAX_COLORS = 5;
+const CV_DEFAULT_COLORS = ["#c3dcf7", "#5a9be8", "#f5b041", "#e8743b", "#9b59b6"];
+
 looker.plugins.visualizations.add({
   id: "subtotal_sorted_table",
   label: "Table with Sorted Subtotals",
@@ -192,6 +196,57 @@ looker.plugins.visualizations.add({
         }
         .trend-icon.is-right {
           margin-left: 0.35em;
+        }
+        /* Cell Visualization: the bar sits behind the value inside the cell padding.
+           isolation keeps the negative z-index bar above the cell background.
+           Inside: the value overlays the bar, inset so it never touches the bar's end.
+           Outside: a track for the bar plus a label box. The box has the same width on
+           every row of the column (--cv-lw-N, set after render), so tracks line up and
+           bars stay comparable. Right to Left puts the label box first. */
+        .cv-wrap {
+          position: relative;
+          isolation: isolate;
+        }
+        .cv-wrap.is-inside {
+          padding: 0 6px;
+        }
+        .cv-wrap.is-outside {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .cv-wrap.is-outside.is-rtl {
+          flex-direction: row-reverse;
+        }
+        /* The track absorbs all shrinking, so outside labels are never cropped and bars
+           (a % of the track) resize with the column. Auto-width columns keep a floor,
+           since their width comes from content and the track has none. */
+        .cv-track {
+          position: relative;
+          flex: 1 1 auto;
+          align-self: stretch;
+          min-width: 0;
+        }
+        .cv-wrap.is-auto-width .cv-track {
+          min-width: 40px;
+        }
+        .cv-wrap.is-outside .cv-label {
+          flex: none;
+        }
+        .cv-label {
+          font-variant-numeric: tabular-nums;
+        }
+        .cv-bar {
+          position: absolute;
+          top: -3px;
+          bottom: -3px;
+          z-index: -1;
+          border-radius: 2px;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+        .cv-label.is-hidden {
+          visibility: hidden;
         }
         .custom-table a,
         .custom-table a:visited {
@@ -672,6 +727,9 @@ looker.plugins.visualizations.add({
       }
     };
 
+    // Seeds and purges written back to config (same reason as the CF seed further down).
+    const seriesConfigUpdates = {};
+
     // Register options for ALL fields so Looker persists their config values,
     // but only reveal (hidden: false) the inputs for the currently selected series.
     let seriesOrder = 2;
@@ -807,10 +865,141 @@ looker.plugins.visualizations.add({
         order: seriesOrder++
       };
 
-      // Growth Indicators: numeric fields only. Follow-up options appear once a pair is picked.
       if (!metricNames.has(fieldName)) return;
+
+      // Cell Visualization: numeric fields only. When on, it replaces conditional formatting
+      // and growth indicators on this field's columns, so the growth indicator options hide.
+      const cvOn = config[`cv_enabled_${fieldName}`] === true;
+      const cvHidden = isHidden || !cvOn;
+
+      seriesOptions[`cv_enabled_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Cell Visualization",
+        default: false,
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      // Colors 1 and 2 are fixed. Each "Add Color" toggle reveals its picker and the next toggle.
+      // Turning one off drops it and every color after it.
+      let cvColorCount = 2;
+      for (let n = 3; n <= CV_MAX_COLORS; n++) {
+        const added = config[`cv_add_color_${fieldName}_${n}`] === true;
+        if (added && cvColorCount === n - 1) {
+          cvColorCount = n;
+        } else if (added) {
+          seriesConfigUpdates[`cv_add_color_${fieldName}_${n}`] = false;
+        }
+      }
+
+      for (let n = 1; n <= CV_MAX_COLORS; n++) {
+        if (n >= 3) {
+          seriesOptions[`cv_add_color_${fieldName}_${n}`] = {
+            section: "Series",
+            type: "boolean",
+            label: `Add Color ${n}`,
+            default: false,
+            display_size: "half",
+            hidden: cvHidden || n > cvColorCount + 1,
+            order: seriesOrder++
+          };
+        }
+        seriesOptions[`cv_color_${fieldName}_${n}`] = {
+          section: "Series",
+          type: "string",
+          display: "color",
+          label: `Color ${n}`,
+          default: CV_DEFAULT_COLORS[n - 1],
+          display_size: "half",
+          hidden: cvHidden || n > cvColorCount,
+          order: seriesOrder++
+        };
+      }
+
+      seriesOptions[`cv_reverse_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Reverse Colors",
+        default: false,
+        hidden: cvHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`cv_direction_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "select",
+        label: "Bar Direction",
+        values: [{ "Left to Right": "ltr" }, { "Right to Left": "rtl" }],
+        default: "ltr",
+        hidden: cvHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`cv_label_position_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "select",
+        label: "Value Label Position",
+        values: [{ "Inside Bar": "inside" }, { "Outside Bar": "outside" }],
+        default: "inside",
+        hidden: cvHidden || config[`cv_labels_${fieldName}`] === false,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`cv_scope_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "select",
+        label: "Detail Row Scale",
+        values: [{ "Within Each Group": "group" }, { "Across All Rows": "all" }],
+        default: "group",
+        hidden: cvHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`cv_subtotals_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Show on Subtotals",
+        default: true,
+        display_size: "half",
+        hidden: cvHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`cv_labels_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Value Labels",
+        default: true,
+        display_size: "half",
+        hidden: cvHidden,
+        order: seriesOrder++
+      };
+
+      if (cvOn) {
+        const cvSeed = {
+          [`cv_scope_${fieldName}`]: "group",
+          [`cv_direction_${fieldName}`]: "ltr",
+          [`cv_subtotals_${fieldName}`]: true,
+          [`cv_labels_${fieldName}`]: true,
+          [`cv_label_position_${fieldName}`]: "inside"
+        };
+        for (let n = 1; n <= cvColorCount; n++) {
+          cvSeed[`cv_color_${fieldName}_${n}`] = CV_DEFAULT_COLORS[n - 1];
+        }
+        for (const [key, value] of Object.entries(cvSeed)) {
+          if (config[key] === undefined || config[key] === null || config[key] === "") {
+            seriesConfigUpdates[key] = value;
+          }
+        }
+      }
+
+      // Growth Indicators: numeric fields only. Follow-up options appear once a pair is picked.
       const trendKey = TREND_PAIRS[config[`trend_${fieldName}`]] ? config[`trend_${fieldName}`] : "";
-      const trendHidden = isHidden || !trendKey;
+      const trendHidden = isHidden || cvOn || !trendKey;
       const colorable = Boolean(trendKey) && !TREND_PAIRS[trendKey].emoji;
 
       seriesOptions[`trend_${fieldName}`] = {
@@ -820,7 +1009,7 @@ looker.plugins.visualizations.add({
         label: "Growth Indicators",
         values: [{ "None": "" }, ...Object.entries(TREND_PAIRS).map(([key, pair]) => ({ [`${pair.up} / ${pair.down}`]: key }))],
         default: "",
-        hidden: isHidden,
+        hidden: isHidden || cvOn,
         order: seriesOrder++
       };
 
@@ -870,11 +1059,11 @@ looker.plugins.visualizations.add({
         type: "boolean",
         label: "Inherit Color from Conditional Formatting",
         default: true,
-        hidden: isHidden || !colorable,
+        hidden: trendHidden || !colorable,
         order: seriesOrder++
       };
 
-      const pickersHidden = isHidden || !colorable || config[`trend_inherit_${fieldName}`] !== false;
+      const pickersHidden = trendHidden || !colorable || config[`trend_inherit_${fieldName}`] !== false;
       seriesOptions[`trend_pos_color_${fieldName}`] = {
         section: "Series",
         type: "string",
@@ -1227,8 +1416,9 @@ looker.plugins.visualizations.add({
       ...cfOptions
     };
 
-    if (Object.keys(staleCfConfigUpdates).length > 0) {
-      this.trigger('updateConfig', [staleCfConfigUpdates]);
+    const configSeeds = { ...seriesConfigUpdates, ...staleCfConfigUpdates };
+    if (Object.keys(configSeeds).length > 0) {
+      this.trigger('updateConfig', [configSeeds]);
     }
 
     this.trigger('registerOptions', options);
@@ -1458,9 +1648,185 @@ looker.plugins.visualizations.add({
       return null;
     };
 
+    // Native subtotal cell when Looker sent one, otherwise the JS-aggregated sum.
+    const subtotalCell = (node, column) => {
+      const nativeSubRow = nativeSubtotalRow(node);
+      const nativeCell = nativeSubRow ? measureCell(nativeSubRow, column) : null;
+      if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
+        return { raw: nativeCell.value, cell: nativeCell };
+      }
+      return { raw: node.totals[column.id], cell: null };
+    };
+
+    // CELL VISUALIZATION
+    // Each row level gets its own scale per display column, so subtotals (about N times a
+    // detail row) don't flatten the detail bars:
+    //   detail rows       → within their parent group, or across all detail rows
+    //   Level 1 subtotals → across all Level 1 subtotals
+    //   Level 2 subtotals → within their Level 1 group, or across all (same scope as detail)
+    //   grand total       → no bar
+    // Scales use every row, collapsed or not, so bars don't move when groups open or close.
+    const hexToRgb = (hex) => {
+      let h = hex.replace("#", "");
+      if (h.length === 3) h = h.split("").map(ch => ch + ch).join("");
+      return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+    };
+
+    const cvConfig = {};
+    metrics.forEach(metric => {
+      const name = metric.name;
+      if (config[`cv_enabled_${name}`] !== true) return;
+      const colors = [];
+      for (let n = 1; n <= CV_MAX_COLORS; n++) {
+        if (n >= 3 && config[`cv_add_color_${name}_${n}`] !== true) break;
+        colors.push(asColor(config[`cv_color_${name}_${n}`], CV_DEFAULT_COLORS[n - 1]));
+      }
+      cvConfig[name] = {
+        stops: colors.map(hexToRgb),
+        reverse: config[`cv_reverse_${name}`] === true,
+        groupScope: config[`cv_scope_${name}`] !== "all",
+        subtotals: config[`cv_subtotals_${name}`] !== false,
+        labels: config[`cv_labels_${name}`] !== false,
+        outside: config[`cv_labels_${name}`] !== false && config[`cv_label_position_${name}`] === "outside",
+        rtl: config[`cv_direction_${name}`] === "rtl"
+      };
+    });
+    const cvColumns = orderedColumns.filter(column => cvConfig[column.measureName]);
+
+    const cvDomainKey = (column, kind, node) => {
+      const groupScope = cvConfig[column.measureName].groupScope;
+      let scope;
+      if (kind === "detail") scope = groupScope ? "d" + node.pathKey : "d";
+      else if (node.depth === 1) scope = "s1";
+      else scope = groupScope ? "s" + node.depth + node.parent.pathKey : "s" + node.depth;
+      return column.id + "|" + scope;
+    };
+
+    const cvDomains = {};
+    const extendDomain = (key, raw) => {
+      const num = parseNumericValue(raw);
+      if (num === null) return;
+      const domain = cvDomains[key];
+      if (!domain) {
+        cvDomains[key] = { min: num, max: num };
+      } else {
+        if (num < domain.min) domain.min = num;
+        if (num > domain.max) domain.max = num;
+      }
+    };
+    if (cvColumns.length > 0) {
+      const collectDomains = (node) => {
+        cvColumns.forEach(column => {
+          if (cvConfig[column.measureName].subtotals) {
+            extendDomain(cvDomainKey(column, "subtotal", node), subtotalCell(node, column).raw);
+          }
+          if (node.depth === groupDepth) {
+            const key = cvDomainKey(column, "detail", node);
+            node.rows.forEach(row => {
+              const cell = measureCell(row, column);
+              extendDomain(key, cell ? cell.value : null);
+            });
+          }
+        });
+        node.children.forEach(collectDomains);
+      };
+      root.children.forEach(collectDomains);
+    }
+
+    const gradientColor = (stops, t) => {
+      if (stops.length === 1) return `rgb(${stops[0].join(", ")})`;
+      const x = Math.min(Math.max(t, 0), 1) * (stops.length - 1);
+      const i = Math.min(Math.floor(x), stops.length - 2);
+      const f = x - i;
+      const rgb = stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * f));
+      return `rgb(${rgb.join(", ")})`;
+    };
+
+    // Bars grow from zero, so a scale with negatives puts the zero line inside the cell.
+    // Right to Left mirrors it: bars start at the right and negatives extend to the right.
+    // Color follows the value's position between the scale's min and max.
+    const cvBarHtml = (cv, num, domain) => {
+      if (!domain) return "";
+      const lo = Math.min(0, domain.min);
+      const hi = Math.max(0, domain.max);
+      const span = hi - lo;
+      if (span <= 0 || num === 0) return "";
+      const offset = ((Math.min(0, num) - lo) / span) * 100;
+      const width = (Math.abs(num) / span) * 100;
+      let t = domain.max === domain.min ? 1 : (num - domain.min) / (domain.max - domain.min);
+      if (cv.reverse) t = 1 - t;
+      const side = cv.rtl ? "right" : "left";
+      return `<span class="cv-bar" style="${side}: ${offset.toFixed(2)}%; width: ${width.toFixed(2)}%; background-color: ${gradientColor(cv.stops, t)};" aria-hidden="true"></span>`;
+    };
+
+    // Outside labels: longest value per column, in characters. Written to --cv-lw-N after render.
+    const cvColumnIndex = {};
+    cvColumns.forEach((column, i) => { cvColumnIndex[column.id] = i; });
+    const cvLabelChars = cvColumns.map(() => 0);
+    const plainLength = (cellHtml) => String(cellHtml)
+      .replace(/<[^>]*>/g, "")
+      .replace(/&[#a-zA-Z0-9]+;/g, "x")
+      .length;
+
+    // Hover text naming what the bar is compared against, e.g. `Bar scale: within Category "Jeans"`.
+    const levelLabel = (level) => {
+      const field = dimensions[level - 1];
+      return config[`label_${field.name}`] || field.label_short || field.label;
+    };
+    const groupText = (node) => `${levelLabel(node.depth)} "${node.rawValue === null || node.rawValue === undefined ? "∅" : node.rawValue}"`;
+    const cvScaleTitle = (column, kind, node) => {
+      const groupScope = cvConfig[column.measureName].groupScope;
+      let scope;
+      if (kind === "detail") {
+        scope = groupScope ? `within ${groupText(node)}` : `across all ${levelLabel(levelCount)} rows`;
+      } else if (node.depth === 1) {
+        scope = `across all ${levelLabel(1)} subtotals`;
+      } else {
+        scope = groupScope ? `within ${groupText(node.parent)}` : `across all ${levelLabel(node.depth)} subtotals`;
+      }
+      return `Bar scale: ${scope}`;
+    };
+
+    const hasFixedWidth = (column) => Number(config[`width_${column.measureName}`]) > 0;
+
+    // Metric cell width. With outside labels, a set Width never goes below the label box
+    // plus the 6px gap: the column stops at its label and the bars shrink to nothing,
+    // instead of the label being cropped. Later declarations override the base ones.
+    const metricCellCss = (column) => {
+      const base = getColumnInlineCss(column.measureName, 'right');
+      const cv = cvConfig[column.measureName];
+      if (!cv || !cv.outside || !hasFixedWidth(column)) return base;
+      const width = `max(${Number(config[`width_${column.measureName}`])}px, calc(var(--cv-lw-${cvColumnIndex[column.id]}, 0px) + 6px))`;
+      return `${base}; width: ${width}; min-width: ${width}; max-width: ${width}`;
+    };
+
+    // Every cell of a Cell Visualization column gets the same wrapper, so the grand total and
+    // null cells line up with the labelled rows. Only detail rows (and subtotals, when on) get
+    // a bar. With Value Labels off, the value stays in the layout (invisible) where a bar is
+    // drawn, so the column keeps its width.
+    const withCellViz = (column, kind, node, rawValue, cellHtml) => {
+      const cv = cvConfig[column.measureName];
+      if (!cv) return cellHtml;
+      const num = parseNumericValue(rawValue);
+      const barRow = num !== null && (kind === "detail" || (kind === "subtotal" && cv.subtotals));
+      const bar = barRow ? cvBarHtml(cv, num, cvDomains[cvDomainKey(column, kind, node)]) : "";
+      const title = barRow ? ` title="${escapeAttr(cvScaleTitle(column, kind, node))}"` : "";
+      const labelClass = `cv-label${barRow && !cv.labels ? " is-hidden" : ""}`;
+      const dirClass = (cv.rtl ? " is-rtl" : "") + (hasFixedWidth(column) ? "" : " is-auto-width");
+
+      if (!cv.outside) {
+        return `<div class="cv-wrap is-inside${dirClass}"${title}>${bar}<span class="${labelClass}">${cellHtml}</span></div>`;
+      }
+      const index = cvColumnIndex[column.id];
+      cvLabelChars[index] = Math.max(cvLabelChars[index], plainLength(cellHtml));
+      return `<div class="cv-wrap is-outside${dirClass}"${title}><span class="cv-track">${bar}</span><span class="${labelClass}" style="min-width: var(--cv-lw-${index}, auto);">${cellHtml}</span></div>`;
+    };
+
     // Helper to evaluate if a cell matches any conditional formatting rule
     const getCfStyle = (fieldName, kind, rawValue) => {
       if (!isCfMasterEnabled) return null;
+      // Cell Visualization replaces conditional formatting on its columns.
+      if (cvConfig[fieldName]) return null;
       const numVal = parseNumericValue(rawValue);
       if (numVal === null) return null;
 
@@ -1575,7 +1941,7 @@ looker.plugins.visualizations.add({
     // Inheriting leaves the icon without its own color, so it takes the cell's color (CF font included).
     const withTrend = (fieldName, kind, rawValue, cellHtml) => {
       const pair = TREND_PAIRS[config[`trend_${fieldName}`]];
-      if (!pair) return cellHtml;
+      if (!pair || cvConfig[fieldName]) return cellHtml;
       if (kind === "subtotal" && config[`trend_subtotals_${fieldName}`] === false) return cellHtml;
       if (kind === "total" && config[`trend_totals_${fieldName}`] === false) return cellHtml;
 
@@ -1895,27 +2261,20 @@ looker.plugins.visualizations.add({
         }
       });
 
-      const nativeSubRow = nativeSubtotalRow(node);
       orderedColumns.forEach(column => {
         const styleM = textStyleClass(column.measureName);
-        const mCss = getColumnInlineCss(column.measureName, 'right');
+        const mCss = metricCellCss(column);
 
-        // Check if Looker provided a pre-calculated subtotal cell for this pivot column
-        const nativeCell = nativeSubRow ? measureCell(nativeSubRow, column) : null;
-        let formattedSubtotal;
-        let rawSubtotalVal;
+        // Native cell keeps custom formatting overrides or Looker's rendered value;
+        // the JS-aggregated fallback has no cell.
+        const { raw: rawSubtotalVal, cell: subCell } = subtotalCell(node, column);
+        const formattedSubtotal = subCell
+          ? formatMetricValue(rawSubtotalVal, column.measureName, subCell)
+          : formatMetricValue(rawSubtotalVal, column.measureName);
+        const subtotalHtml = withCellViz(column, "subtotal", node, rawSubtotalVal,
+          withTrend(column.measureName, "subtotal", rawSubtotalVal, formattedSubtotal));
 
-        if (nativeCell && (nativeCell.value !== undefined || nativeCell.rendered !== undefined)) {
-          // Use native cell with formatMetricValue (handles custom formatting overrides or defaults to native rendered)
-          formattedSubtotal = formatMetricValue(nativeCell.value, column.measureName, nativeCell);
-          rawSubtotalVal = nativeCell.value;
-        } else {
-          // Fallback to JS-aggregated total
-          formattedSubtotal = formatMetricValue(node.totals[column.id], column.measureName);
-          rawSubtotalVal = node.totals[column.id];
-        }
-
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${withTrend(column.measureName, "subtotal", rawSubtotalVal, formattedSubtotal)}</td>`;
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${subtotalHtml}</td>`;
       });
       html += `</tr>`;
       previousPath = node.path;
@@ -1937,8 +2296,10 @@ looker.plugins.visualizations.add({
         const rawRowVal = mCell ? mCell.value : undefined;
         const mFormatted = formatMetricValue(rawRowVal, column.measureName, mCell);
         const styleM = textStyleClass(column.measureName);
-        const mCss = getColumnInlineCss(column.measureName, 'right');
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${withTrend(column.measureName, "detail", rawRowVal, mFormatted)}</td>`;
+        const mCss = metricCellCss(column);
+        const detailHtml = withCellViz(column, "detail", leaf, rawRowVal,
+          withTrend(column.measureName, "detail", rawRowVal, mFormatted));
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${detailHtml}</td>`;
       });
       html += `</tr>`;
       previousPath = leaf.path;
@@ -1971,7 +2332,7 @@ looker.plugins.visualizations.add({
       const nativeTotalsData = queryResponse.totals_data || {};
 
       orderedColumns.forEach(column => {
-        const mCss = getColumnInlineCss(column.measureName, 'right');
+        const mCss = metricCellCss(column);
         const nativeTotalCell = measureCell(nativeTotalsData, column);
         let formattedTotal;
         let rawTotalVal;
@@ -1984,7 +2345,7 @@ looker.plugins.visualizations.add({
           rawTotalVal = grandTotals[column.id];
         }
 
-        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${withTrend(column.measureName, "total", rawTotalVal, formattedTotal)}</td>`;
+        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${withCellViz(column, "total", null, rawTotalVal, withTrend(column.measureName, "total", rawTotalVal, formattedTotal))}</td>`;
       });
       html += `</tr>`;
     }
@@ -1994,6 +2355,11 @@ looker.plugins.visualizations.add({
     const container = document.getElementById("table-container");
     container.style.setProperty("--table-border", borderColor);
     container.innerHTML = html;
+    // ch is the width of "0" in the label's own font, so bold subtotals size themselves.
+    // Digits are tabular; the extra half character covers wider symbols such as € or %.
+    cvLabelChars.forEach((chars, index) => {
+      container.style.setProperty(`--cv-lw-${index}`, chars > 0 ? `${chars + 0.5}ch` : "0px");
+    });
 
     if (useGroupedHeader) {
       const firstHeaderRow = container.querySelector("thead tr");
