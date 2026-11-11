@@ -40,6 +40,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - Series settings and conditional formatting stay on the measure, so they apply to every pivot column of that measure
 - Per-series label, width (px), text alignment, bold, italic, underline, font color, background color, and number format (currencies, decimals, percent, ID)
 - Optional border color matched to the series background
+- Growth Indicators per measure: pick an icon pair (▲/▼, ↑/↓, △/▽, …) shown for values above or below zero, placed left or right of the value, optionally inverted, with toggles for subtotal and grand total rows. Icons take the cell's color (conditional formatting included) or use their own positive/negative colors
 
 **Header and cells**
 

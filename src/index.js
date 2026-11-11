@@ -1,3 +1,24 @@
+// Growth Indicator icon pairs. Some fonts draw ⬆⬇↗↘ as color emoji, so they get
+// U+FE0E (text presentation) when rendered. ⏫⏬ are always emoji and ignore CSS color.
+const TEXT_STYLE = "︎";
+const TREND_PAIRS = {
+  tri_outline: { up: "△", down: "▽" },
+  tri_solid: { up: "▲", down: "▼" },
+  tri_media: { up: "⏶", down: "⏷" },
+  chevron: { up: "˄", down: "˅" },
+  corner: { up: "◢", down: "◣" },
+  tri_small: { up: "▴", down: "▾" },
+  arrow: { up: "↑", down: "↓" },
+  arrow_heavy: { up: "⬆", down: "⬇", textStyle: true },
+  arrow_diagonal: { up: "↗", down: "↘", textStyle: true },
+  double_emoji: { up: "⏫", down: "⏬", emoji: true },
+  tri_solid_double: { up: "▲▲", down: "▼▼" },
+  tri_small_double: { up: "▴▴", down: "▾▾" },
+  tri_media_double: { up: "⏶⏶", down: "⏷⏷" }
+};
+const TREND_POS_COLOR = "#2e7d32";
+const TREND_NEG_COLOR = "#c62828";
+
 looker.plugins.visualizations.add({
   id: "subtotal_sorted_table",
   label: "Table with Sorted Subtotals",
@@ -160,6 +181,17 @@ looker.plugins.visualizations.add({
         }
         .is-underline {
           text-decoration: underline !important;
+        }
+        /* inline-block stops the cell's underline from running under the icon */
+        .trend-icon {
+          display: inline-block;
+          text-decoration: none;
+        }
+        .trend-icon.is-left {
+          margin-right: 0.35em;
+        }
+        .trend-icon.is-right {
+          margin-left: 0.35em;
         }
         .custom-table a,
         .custom-table a:visited {
@@ -772,6 +804,96 @@ looker.plugins.visualizations.add({
         ],
         default: "",
         hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      // Growth Indicators: numeric fields only. Follow-up options appear once a pair is picked.
+      if (!metricNames.has(fieldName)) return;
+      const trendKey = TREND_PAIRS[config[`trend_${fieldName}`]] ? config[`trend_${fieldName}`] : "";
+      const trendHidden = isHidden || !trendKey;
+      const colorable = Boolean(trendKey) && !TREND_PAIRS[trendKey].emoji;
+
+      seriesOptions[`trend_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "select",
+        label: "Growth Indicators",
+        values: [{ "None": "" }, ...Object.entries(TREND_PAIRS).map(([key, pair]) => ({ [`${pair.up} / ${pair.down}`]: key }))],
+        default: "",
+        hidden: isHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`trend_align_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "select",
+        label: "Indicator Alignment",
+        values: [{ "Left": "left" }, { "Right": "right" }],
+        default: "left",
+        hidden: trendHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`trend_subtotals_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Show on Subtotals",
+        default: true,
+        display_size: "half",
+        hidden: trendHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`trend_totals_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Show on Grand Total",
+        default: true,
+        display_size: "half",
+        hidden: trendHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`trend_invert_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Invert Indicators",
+        default: false,
+        hidden: trendHidden,
+        order: seriesOrder++
+      };
+
+      // Emoji-only pairs ignore CSS color, so their color options stay hidden.
+      seriesOptions[`trend_inherit_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Inherit Color from Conditional Formatting",
+        default: true,
+        hidden: isHidden || !colorable,
+        order: seriesOrder++
+      };
+
+      const pickersHidden = isHidden || !colorable || config[`trend_inherit_${fieldName}`] !== false;
+      seriesOptions[`trend_pos_color_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "color",
+        label: "Positive Color",
+        default: TREND_POS_COLOR,
+        display_size: "half",
+        hidden: pickersHidden,
+        order: seriesOrder++
+      };
+
+      seriesOptions[`trend_neg_color_${fieldName}`] = {
+        section: "Series",
+        type: "string",
+        display: "color",
+        label: "Negative Color",
+        default: TREND_NEG_COLOR,
+        display_size: "half",
+        hidden: pickersHidden,
         order: seriesOrder++
       };
     });
@@ -1449,6 +1571,35 @@ looker.plugins.visualizations.add({
       config[`underline_${fieldName}`] ? "is-underline" : ""
     ].filter(Boolean).join(" ");
 
+    // Growth Indicators: an up icon for values > 0, a down icon for values < 0, nothing for 0 or null.
+    // Inheriting leaves the icon without its own color, so it takes the cell's color (CF font included).
+    const withTrend = (fieldName, kind, rawValue, cellHtml) => {
+      const pair = TREND_PAIRS[config[`trend_${fieldName}`]];
+      if (!pair) return cellHtml;
+      if (kind === "subtotal" && config[`trend_subtotals_${fieldName}`] === false) return cellHtml;
+      if (kind === "total" && config[`trend_totals_${fieldName}`] === false) return cellHtml;
+
+      const num = parseNumericValue(rawValue);
+      if (num === null || num === 0) return cellHtml;
+
+      const positive = num > 0;
+      const showUp = config[`trend_invert_${fieldName}`] ? !positive : positive;
+      let icon = showUp ? pair.up : pair.down;
+      if (pair.textStyle) icon = [...icon].map(ch => ch + TEXT_STYLE).join("");
+
+      let colorCss = "";
+      if (!pair.emoji && config[`trend_inherit_${fieldName}`] === false) {
+        const color = positive
+          ? asColor(config[`trend_pos_color_${fieldName}`], TREND_POS_COLOR)
+          : asColor(config[`trend_neg_color_${fieldName}`], TREND_NEG_COLOR);
+        colorCss = ` style="color: ${color};"`;
+      }
+
+      const side = config[`trend_align_${fieldName}`] === "right" ? "right" : "left";
+      const iconHtml = `<span class="trend-icon is-${side}"${colorCss} aria-hidden="true">${icon}</span>`;
+      return side === "right" ? cellHtml + iconHtml : iconHtml + cellHtml;
+    };
+
     // Helper functions to retrieve per-column styling declarations
     const getColumnInlineCss = (fieldName, defaultAlign = '') => {
       const styles = [];
@@ -1764,7 +1915,7 @@ looker.plugins.visualizations.add({
           rawSubtotalVal = node.totals[column.id];
         }
 
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${formattedSubtotal}</td>`;
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${withTrend(column.measureName, "subtotal", rawSubtotalVal, formattedSubtotal)}</td>`;
       });
       html += `</tr>`;
       previousPath = node.path;
@@ -1787,7 +1938,7 @@ looker.plugins.visualizations.add({
         const mFormatted = formatMetricValue(rawRowVal, column.measureName, mCell);
         const styleM = textStyleClass(column.measureName);
         const mCss = getColumnInlineCss(column.measureName, 'right');
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${mFormatted}</td>`;
+        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${withTrend(column.measureName, "detail", rawRowVal, mFormatted)}</td>`;
       });
       html += `</tr>`;
       previousPath = leaf.path;
@@ -1833,7 +1984,7 @@ looker.plugins.visualizations.add({
           rawTotalVal = grandTotals[column.id];
         }
 
-        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${formattedTotal}</td>`;
+        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${withTrend(column.measureName, "total", rawTotalVal, formattedTotal)}</td>`;
       });
       html += `</tr>`;
     }

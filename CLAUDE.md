@@ -23,6 +23,7 @@ In standard Looker tables, sorting on a metric sorts raw rows rather than group 
     - Column width in px (`width_${fieldName}`)
     - Text alignment (`align_${fieldName}`: Left, Center, Right)
     - Bold styling (`bold_${fieldName}`)
+    - Growth Indicators (`trend_${fieldName}`, metrics only): icon pair from `TREND_PAIRS` (top of `src/index.js`), up for > 0, down for < 0, nothing for 0/null. When set, reveals `trend_align_` (left/right of value), `trend_invert_`, `trend_subtotals_`, `trend_totals_`, and `trend_inherit_` (inherit cell/CF font color, default on; hidden for emoji-only pairs). Turning inherit off reveals `trend_pos_color_` / `trend_neg_color_`
   - **Formatting:**
     - Font sizes: `headerFontSize`, `rowFontSize`
     - Colors & alignment: `headerFontColor`, `headerBgColor`, `headerAlign`, `subtotalFontColor`, `subtotalBgColor`, `rowBgColor`, `borderColor`
