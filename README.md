@@ -22,7 +22,7 @@ Column order, labels, widths, alignment, bold, and number formats stay under you
 - Two or three dimensions. With three, Level 1 and Level 2 both get subtotal rows, and Level 3 is the detail row. Both subtotal levels use Looker's own subtotal values
 - Subtotal rows, on by default and toggleable from the Plot tab. With three dimensions, **Show Level 2 Subtotals** turns off only the Level 2 rows; the Level 2 groups are still sorted by their subtotal
 - Grand total row, toggleable (shown when the query returns totals)
-- Click a subtotal row to collapse or expand that group, at either level. Collapsing Level 1 hides its Level 2 groups; expanding it again restores each Level 2 group as it was. Collapsed groups are saved with the tile, with a one-click revert to the fully expanded view
+- Click a subtotal row to collapse or expand that group, at either level. Collapsing Level 1 hides its Level 2 groups; expanding it again restores each Level 2 group as it was. Collapsed groups are saved with the tile. The Plot tab shows **Collapse All Subtotals Rows** while every group is expanded, and **Uncollapse All Subtotals Rows** once at least one group is collapsed
 - Hide repeated labels on the grouping dimensions
 - **Freeze Current Row** (Plot tab, on by default): while scrolling, the current group's subtotal row stays pinned under the header until the next group's subtotal row takes its place. With three dimensions, the current Level 2 subtotal row is pinned just below the Level 1 row. With subtotals off, the first row of each group is pinned instead
 

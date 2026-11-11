@@ -480,7 +480,15 @@ looker.plugins.visualizations.add({
       ]);
     }
 
-    const hasCollapsedGroups = !expandAllGroups && readCollapsedKeys(config.collapsedGroups).length > 0;
+    // Mirror toggle: on means "collapse every group". The keys are only known once the
+    // tree is built, so the config write happens further down.
+    const collapseAllGroups = !expandAllGroups && config.collapseAllGroups === true;
+    if (config.collapseAllGroups && !collapseAllGroups) {
+      this.trigger("updateConfig", [{ collapseAllGroups: false }]);
+    }
+
+    const hasCollapsedGroups = collapseAllGroups
+      || (!expandAllGroups && readCollapsedKeys(config.collapsedGroups).length > 0);
 
     const orderedColumns = orderedColumnIds.map(id => columnById[id]).filter(Boolean);
 
@@ -519,10 +527,20 @@ looker.plugins.visualizations.add({
     plotOptions.resetCollapsedGroups = {
       section: "Plot",
       type: "boolean",
-      label: "Revert to Uncollapsed View",
+      label: "Uncollapse All Subtotals Rows",
       default: false,
       order: 6,
       hidden: !hasCollapsedGroups
+    };
+
+    // Shown only while nothing is collapsed, so exactly one of the two buttons is visible.
+    plotOptions.collapseAllGroups = {
+      section: "Plot",
+      type: "boolean",
+      label: "Collapse All Subtotals Rows",
+      default: false,
+      order: 6,
+      hidden: hasCollapsedGroups || config.showSubtotals === false
     };
 
     // Off keeps the two header rows (pivot value, then measure name).
@@ -1226,7 +1244,26 @@ looker.plugins.visualizations.add({
       .replace(/"/g, "&quot;")
       .replace(/</g, "&lt;");
 
-    const collapsedSet = new Set(expandAllGroups ? [] : readCollapsedKeys(config.collapsedGroups));
+    let collapsedSet = new Set(expandAllGroups ? [] : readCollapsedKeys(config.collapsedGroups));
+
+    if (collapseAllGroups) {
+      // Only groups whose subtotal row is shown, since that row is the only way to expand them again.
+      const collapsibleDepth = (depth) => config.showSubtotals !== false
+        && (depth === 1 || config.showLevel2Subtotals !== false);
+      const allKeys = [];
+      const collectKeys = (node) => {
+        if (node.depth >= 1 && collapsibleDepth(node.depth)) allKeys.push(node.collapseKey);
+        node.children.forEach(collectKeys);
+      };
+      collectKeys(root);
+      collapsedSet = new Set(allKeys);
+      this.trigger("updateConfig", [
+        {
+          collapsedGroups: JSON.stringify([...collapsedSet].sort()),
+          collapseAllGroups: false
+        }
+      ]);
+    }
 
     // A hidden column has no header to show or change its alphabetical sort, so it is ignored.
     const activeSecondarySort = isLevelHidden(levelCount) ? "" : secondarySortDirection;
