@@ -22,6 +22,52 @@ const TREND_NEG_COLOR = "#c62828";
 // Cell Visualization gradient stops. Colors 1 and 2 are always used; 3 to 5 are added one at a time.
 const CV_MAX_COLORS = 5;
 const CV_DEFAULT_COLORS = ["#c3dcf7", "#5a9be8", "#f5b041", "#e8743b", "#9b59b6"];
+// Conditional formatting "Along a Scale" stops. Starts at white so low values stay close to a plain cell.
+const CF_SCALE_DEFAULT_COLORS = ["#ffffff", "#5a9be8", "#f5b041", "#e8743b", "#9b59b6"];
+
+// Gradient stop pickers shared by Cell Visualization and scale rules. Colors 1 and 2 are
+// fixed. Each "Add Color n" toggle reveals its picker and the next toggle. A toggle that is
+// on without the one before it (the earlier one was turned off) is reset, which drops it and
+// every color after it. Returns the number of colors in use and the next free order value.
+const addGradientColorOptions = ({ options, updates, config, colorKey, addKey, labelPrefix = "", defaults, section, hidden, order }) => {
+  let count = 2;
+  for (let n = 3; n <= CV_MAX_COLORS; n++) {
+    const added = config[addKey(n)] === true;
+    if (added && count === n - 1) {
+      count = n;
+    } else if (added) {
+      updates[addKey(n)] = false;
+    }
+  }
+
+  for (let n = 1; n <= CV_MAX_COLORS; n++) {
+    if (n >= 3) {
+      // The option after the pickers must be full width: Looker only flows half-width options
+      // into free slots, so a half-width one would sit beside "Add Color n" until the color is
+      // added, then jump down a row.
+      options[addKey(n)] = {
+        section,
+        type: "boolean",
+        label: `${labelPrefix}Add Color ${n}`,
+        default: false,
+        display_size: "half",
+        hidden: hidden || n > count + 1,
+        order: order++
+      };
+    }
+    options[colorKey(n)] = {
+      section,
+      type: "string",
+      display: "color",
+      label: `${labelPrefix}Color ${n}`,
+      default: defaults[n - 1],
+      display_size: "half",
+      hidden: hidden || n > count,
+      order: order++
+    };
+  }
+  return { count, order };
+};
 
 looker.plugins.visualizations.add({
   id: "subtotal_sorted_table",
@@ -244,6 +290,11 @@ looker.plugins.visualizations.add({
           border-radius: 2px;
           -webkit-print-color-adjust: exact;
           print-color-adjust: exact;
+        }
+        /* Auto-Contrast Labels: a halo in the tone opposite the text, readable on the bar
+           and on the empty cell alike. */
+        .cv-label.has-halo {
+          text-shadow: 0 0 2px var(--cv-halo), 0 0 2px var(--cv-halo), 0 0 1px var(--cv-halo);
         }
         .cv-label.is-hidden {
           visibility: hidden;
@@ -881,41 +932,19 @@ looker.plugins.visualizations.add({
         order: seriesOrder++
       };
 
-      // Colors 1 and 2 are fixed. Each "Add Color" toggle reveals its picker and the next toggle.
-      // Turning one off drops it and every color after it.
-      let cvColorCount = 2;
-      for (let n = 3; n <= CV_MAX_COLORS; n++) {
-        const added = config[`cv_add_color_${fieldName}_${n}`] === true;
-        if (added && cvColorCount === n - 1) {
-          cvColorCount = n;
-        } else if (added) {
-          seriesConfigUpdates[`cv_add_color_${fieldName}_${n}`] = false;
-        }
-      }
-
-      for (let n = 1; n <= CV_MAX_COLORS; n++) {
-        if (n >= 3) {
-          seriesOptions[`cv_add_color_${fieldName}_${n}`] = {
-            section: "Series",
-            type: "boolean",
-            label: `Add Color ${n}`,
-            default: false,
-            display_size: "half",
-            hidden: cvHidden || n > cvColorCount + 1,
-            order: seriesOrder++
-          };
-        }
-        seriesOptions[`cv_color_${fieldName}_${n}`] = {
-          section: "Series",
-          type: "string",
-          display: "color",
-          label: `Color ${n}`,
-          default: CV_DEFAULT_COLORS[n - 1],
-          display_size: "half",
-          hidden: cvHidden || n > cvColorCount,
-          order: seriesOrder++
-        };
-      }
+      const cvColors = addGradientColorOptions({
+        options: seriesOptions,
+        updates: seriesConfigUpdates,
+        config,
+        colorKey: (n) => `cv_color_${fieldName}_${n}`,
+        addKey: (n) => `cv_add_color_${fieldName}_${n}`,
+        defaults: CV_DEFAULT_COLORS,
+        section: "Series",
+        hidden: cvHidden,
+        order: seriesOrder
+      });
+      const cvColorCount = cvColors.count;
+      seriesOrder = cvColors.order;
 
       seriesOptions[`cv_reverse_${fieldName}`] = {
         section: "Series",
@@ -945,6 +974,17 @@ looker.plugins.visualizations.add({
         values: [{ "Inside Bar": "inside" }, { "Outside Bar": "outside" }],
         default: "inside",
         hidden: cvHidden || config[`cv_labels_${fieldName}`] === false,
+        order: seriesOrder++
+      };
+
+      // Inside labels sit partly over the bar and partly over the empty cell, so the text
+      // color can't simply flip. A halo in the opposite tone keeps it readable on both.
+      seriesOptions[`cv_contrast_${fieldName}`] = {
+        section: "Series",
+        type: "boolean",
+        label: "Auto-Contrast Labels",
+        default: false,
+        hidden: cvHidden || config[`cv_labels_${fieldName}`] === false || config[`cv_label_position_${fieldName}`] === "outside",
         order: seriesOrder++
       };
 
@@ -1278,6 +1318,13 @@ looker.plugins.visualizations.add({
         };
       }
 
+      // "Along a Scale" is a condition: every value gets a color from a gradient between its
+      // scale's min and max, so the value and single-color options hide and the gradient
+      // options show instead.
+      const isScale = (config[`cf_operator_${i}`] || preset.op) === "scale";
+      const singleVisible = isDetailsVisible && !isScale;
+      const scaleVisible = isDetailsVisible && isScale;
+
       cfOptions[`cf_operator_${i}`] = {
         section: "Formatting",
         type: "string",
@@ -1290,7 +1337,8 @@ looker.plugins.visualizations.add({
           { "Less than or equal (<=)": "lte" },
           { "Equal to (==)": "eq" },
           { "Not equal to (!=)": "neq" },
-          { "Between [min, max]": "between" }
+          { "Between [min, max]": "between" },
+          { "Along a Scale": "scale" }
         ],
         default: preset.op,
         display_size: "half",
@@ -1304,7 +1352,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Value`,
         default: preset.val,
         display_size: "half",
-        hidden: !isDetailsVisible,
+        hidden: !singleVisible,
         order: cfOrder++
       };
 
@@ -1315,7 +1363,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Max Value`,
         default: 100,
         display_size: "half",
-        hidden: !isDetailsVisible || !isBetween,
+        hidden: !singleVisible || !isBetween,
         order: cfOrder++
       };
 
@@ -1328,7 +1376,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Color Background`,
         default: preset.useBg,
         display_size: "half",
-        hidden: !isDetailsVisible,
+        hidden: !singleVisible,
         order: cfOrder++
       };
 
@@ -1339,7 +1387,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Background`,
         default: preset.bg,
         display_size: "half",
-        hidden: !isDetailsVisible || !hasBg,
+        hidden: !singleVisible || !hasBg,
         order: cfOrder++
       };
 
@@ -1349,7 +1397,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Color Text`,
         default: preset.useFont,
         display_size: "half",
-        hidden: !isDetailsVisible,
+        hidden: !singleVisible,
         order: cfOrder++
       };
 
@@ -1360,7 +1408,76 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Text Color`,
         default: preset.font,
         display_size: "half",
-        hidden: !isDetailsVisible || !hasFont,
+        hidden: !singleVisible || !hasFont,
+        order: cfOrder++
+      };
+
+      // Along a Scale options
+      const scaleTarget = config[`cf_scale_target_${i}`] === "font" ? "font" : "bg";
+      cfOptions[`cf_scale_target_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "select",
+        label: `Rule ${i} Apply Scale To`,
+        values: [{ "Background": "bg" }, { "Text": "font" }],
+        default: "bg",
+        hidden: !scaleVisible,
+        order: cfOrder++
+      };
+
+      const scaleColors = addGradientColorOptions({
+        options: cfOptions,
+        updates: staleCfConfigUpdates,
+        config,
+        colorKey: (n) => `cf_scale_color_${i}_${n}`,
+        addKey: (n) => `cf_scale_add_color_${i}_${n}`,
+        labelPrefix: `Rule ${i} `,
+        defaults: CF_SCALE_DEFAULT_COLORS,
+        section: "Formatting",
+        hidden: !scaleVisible,
+        order: cfOrder
+      });
+      cfOrder = scaleColors.order;
+
+      cfOptions[`cf_scale_reverse_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Reverse Colors`,
+        default: false,
+        hidden: !scaleVisible,
+        order: cfOrder++
+      };
+
+      // Dark backgrounds switch the text to whichever of the cell's text color, white or
+      // dark gray reads best. Not needed when the scale colors the text itself.
+      cfOptions[`cf_scale_contrast_${i}`] = {
+        section: "Formatting",
+        type: "boolean",
+        label: `Rule ${i} Auto-Contrast Text`,
+        default: true,
+        hidden: !scaleVisible || scaleTarget === "font",
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_scale_across_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "select",
+        label: `Rule ${i} Scale Across`,
+        values: [{ "Each Column": "column" }, { "Shared Across Columns": "rule" }],
+        default: "column",
+        hidden: !scaleVisible,
+        order: cfOrder++
+      };
+
+      cfOptions[`cf_scale_scope_${i}`] = {
+        section: "Formatting",
+        type: "string",
+        display: "select",
+        label: `Rule ${i} Detail Row Scale`,
+        values: [{ "Across All Rows": "all" }, { "Within Each Group": "group" }],
+        default: "all",
+        hidden: !scaleVisible,
         order: cfOrder++
       };
 
@@ -1380,7 +1497,7 @@ looker.plugins.visualizations.add({
         label: `Rule ${i} Grand Total`,
         default: true,
         display_size: "half",
-        hidden: !isDetailsVisible,
+        hidden: !singleVisible,
         order: cfOrder++
       };
 
@@ -1398,6 +1515,17 @@ looker.plugins.visualizations.add({
           [`cf_subtotals_${i}`]: true,
           [`cf_totals_${i}`]: true
         };
+        if (isScale) {
+          Object.assign(ruleSeed, {
+            [`cf_scale_target_${i}`]: "bg",
+            [`cf_scale_contrast_${i}`]: true,
+            [`cf_scale_across_${i}`]: "column",
+            [`cf_scale_scope_${i}`]: "all"
+          });
+          for (let n = 1; n <= scaleColors.count; n++) {
+            ruleSeed[`cf_scale_color_${i}_${n}`] = CF_SCALE_DEFAULT_COLORS[n - 1];
+          }
+        }
         for (const [key, value] of Object.entries(ruleSeed)) {
           if (config[key] === undefined || config[key] === null || config[key] === "") {
             staleCfConfigUpdates[key] = value;
@@ -1672,59 +1800,163 @@ looker.plugins.visualizations.add({
       return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
     };
 
+    // WCAG relative luminance and contrast ratio, for auto-contrast text and label halos.
+    const luminance = (rgb) => {
+      const [r, g, b] = rgb.map(c => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrastRatio = (a, b) => {
+      const la = luminance(a);
+      const lb = luminance(b);
+      return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+    };
+    // Keeps the cell's own text color when it already reads well (WCAG AA, 4.5:1), otherwise
+    // switches to white or dark gray, whichever contrasts more with the background.
+    const readableText = (bgRgb, fontHex) => {
+      if (contrastRatio(bgRgb, hexToRgb(fontHex)) >= 4.5) return fontHex;
+      return contrastRatio(bgRgb, [255, 255, 255]) >= contrastRatio(bgRgb, hexToRgb("#333333")) ? "#ffffff" : "#333333";
+    };
+    // Text color of a metric cell before conditional formatting: series color, else row color.
+    const baseFontColor = (fieldName, kind) => (
+      asColor(config[`fontColor_${fieldName}`], "") || (kind === "subtotal" ? subtotalFont : "#333333")
+    );
+
+    // Gradient stops: colors 1 and 2, then each added color up to the first one not added.
+    const readStops = (colorKey, addKey, defaults) => {
+      const colors = [];
+      for (let n = 1; n <= CV_MAX_COLORS; n++) {
+        if (n >= 3 && config[addKey(n)] !== true) break;
+        colors.push(asColor(config[colorKey(n)], defaults[n - 1]));
+      }
+      return colors.map(hexToRgb);
+    };
+
+    // Scale scope of a cell, shared by Cell Visualization and scale rules: each row level has
+    // its own scale, and detail rows / Level 2 subtotals can be split by parent group.
+    const scaleScopeKey = (groupScope, kind, node) => {
+      if (kind === "detail") return groupScope ? "d" + node.pathKey : "d";
+      if (node.depth === 1) return "s1";
+      return groupScope ? "s" + node.depth + node.parent.pathKey : "s" + node.depth;
+    };
+
     const cvConfig = {};
     metrics.forEach(metric => {
       const name = metric.name;
       if (config[`cv_enabled_${name}`] !== true) return;
-      const colors = [];
-      for (let n = 1; n <= CV_MAX_COLORS; n++) {
-        if (n >= 3 && config[`cv_add_color_${name}_${n}`] !== true) break;
-        colors.push(asColor(config[`cv_color_${name}_${n}`], CV_DEFAULT_COLORS[n - 1]));
-      }
+      const labels = config[`cv_labels_${name}`] !== false;
+      const outside = labels && config[`cv_label_position_${name}`] === "outside";
       cvConfig[name] = {
-        stops: colors.map(hexToRgb),
+        stops: readStops(n => `cv_color_${name}_${n}`, n => `cv_add_color_${name}_${n}`, CV_DEFAULT_COLORS),
         reverse: config[`cv_reverse_${name}`] === true,
         groupScope: config[`cv_scope_${name}`] !== "all",
         subtotals: config[`cv_subtotals_${name}`] !== false,
-        labels: config[`cv_labels_${name}`] !== false,
-        outside: config[`cv_labels_${name}`] !== false && config[`cv_label_position_${name}`] === "outside",
+        labels,
+        outside,
+        halo: labels && !outside && config[`cv_contrast_${name}`] === true,
         rtl: config[`cv_direction_${name}`] === "rtl"
       };
     });
     const cvColumns = orderedColumns.filter(column => cvConfig[column.measureName]);
+    const cvDomainKey = (column, kind, node) => (
+      column.id + "|" + scaleScopeKey(cvConfig[column.measureName].groupScope, kind, node)
+    );
 
-    const cvDomainKey = (column, kind, node) => {
-      const groupScope = cvConfig[column.measureName].groupScope;
-      let scope;
-      if (kind === "detail") scope = groupScope ? "d" + node.pathKey : "d";
-      else if (node.depth === 1) scope = "s1";
-      else scope = groupScope ? "s" + node.depth + node.parent.pathKey : "s" + node.depth;
-      return column.id + "|" + scope;
-    };
+    // CONDITIONAL FORMATTING RULES, parsed once. A rule's fields are its dropdown slots up to
+    // the first empty one (trailing stale slots never apply), plus legacy per-field checkboxes.
+    const cfRules = [];
+    if (isCfMasterEnabled) {
+      const asNumber = (value) => (typeof value === "number" ? value : (parseFloat(value) || 0));
+      for (let i = 1; i <= 5; i++) {
+        if (!(config[`cf_active_${i}`] === true || Boolean(config[`cf_field_${i}`]))) continue;
+        const fields = new Set();
+        for (let f = 1; f <= maxFieldsPerRule; f++) {
+          const val = config[`cf_field_${i}_${f}`] || (f === 1 ? config[`cf_field_${i}`] : "");
+          if (!val || !metrics.some(m => m.name === val)) break;
+          fields.add(val);
+        }
+        metrics.forEach(m => { if (config[`cf_field_${i}_${m.name}`] === true) fields.add(m.name); });
+        if (fields.size === 0) continue;
 
-    const cvDomains = {};
+        const rule = {
+          index: i,
+          fields,
+          subtotals: config[`cf_subtotals_${i}`] !== false,
+          totals: config[`cf_totals_${i}`] !== false,
+          isScale: (config[`cf_operator_${i}`] || cfPresetDefaults[i - 1].op) === "scale"
+        };
+        if (rule.isScale) {
+          Object.assign(rule, {
+            stops: readStops(n => `cf_scale_color_${i}_${n}`, n => `cf_scale_add_color_${i}_${n}`, CF_SCALE_DEFAULT_COLORS),
+            reverse: config[`cf_scale_reverse_${i}`] === true,
+            target: config[`cf_scale_target_${i}`] === "font" ? "font" : "bg",
+            contrast: config[`cf_scale_contrast_${i}`] !== false,
+            shared: config[`cf_scale_across_${i}`] === "rule",
+            groupScope: config[`cf_scale_scope_${i}`] === "group"
+          });
+        } else {
+          const preset = cfPresetDefaults[i - 1];
+          Object.assign(rule, {
+            op: config[`cf_operator_${i}`] || preset.op,
+            thresh: asNumber(config[`cf_value_${i}`]),
+            threshMax: asNumber(config[`cf_value_max_${i}`]),
+            // null = "don't override", so the cell falls back to the series/row colors
+            bg: (config[`cf_use_bg_${i}`] ?? preset.useBg) ? asColor(config[`cf_bg_${i}`], preset.bg) : null,
+            font: (config[`cf_use_font_${i}`] ?? preset.useFont) ? asColor(config[`cf_font_${i}`], preset.font) : null
+          });
+        }
+        cfRules.push(rule);
+      }
+    }
+    const cfScaleRules = cfRules.filter(rule => rule.isScale);
+    // Each Column: one scale per display column. All Selected Columns: one scale per rule.
+    const cfDomainKey = (rule, column, kind, node) => (
+      `cf${rule.index}|${rule.shared ? "*" : column.id}|${scaleScopeKey(rule.groupScope, kind, node)}`
+    );
+
+    // Min and max of every scale, over every row, collapsed or not, so colors and bars don't
+    // move when groups open or close. Cell Visualization columns ignore conditional formatting,
+    // so they stay out of the rules' scales too.
+    const scaleDomains = {};
     const extendDomain = (key, raw) => {
       const num = parseNumericValue(raw);
       if (num === null) return;
-      const domain = cvDomains[key];
+      const domain = scaleDomains[key];
       if (!domain) {
-        cvDomains[key] = { min: num, max: num };
+        scaleDomains[key] = { min: num, max: num };
       } else {
         if (num < domain.min) domain.min = num;
         if (num > domain.max) domain.max = num;
       }
     };
-    if (cvColumns.length > 0) {
+    const scaleTargets = cvColumns.map(column => ({
+      column,
+      subtotals: cvConfig[column.measureName].subtotals,
+      key: (kind, node) => cvDomainKey(column, kind, node)
+    }));
+    cfScaleRules.forEach(rule => {
+      orderedColumns.forEach(column => {
+        if (!rule.fields.has(column.measureName) || cvConfig[column.measureName]) return;
+        scaleTargets.push({
+          column,
+          subtotals: rule.subtotals,
+          key: (kind, node) => cfDomainKey(rule, column, kind, node)
+        });
+      });
+    });
+    if (scaleTargets.length > 0) {
       const collectDomains = (node) => {
-        cvColumns.forEach(column => {
-          if (cvConfig[column.measureName].subtotals) {
-            extendDomain(cvDomainKey(column, "subtotal", node), subtotalCell(node, column).raw);
+        scaleTargets.forEach(({ column, subtotals, key }) => {
+          if (subtotals) {
+            extendDomain(key("subtotal", node), subtotalCell(node, column).raw);
           }
           if (node.depth === groupDepth) {
-            const key = cvDomainKey(column, "detail", node);
+            const detailScaleKey = key("detail", node);
             node.rows.forEach(row => {
               const cell = measureCell(row, column);
-              extendDomain(key, cell ? cell.value : null);
+              extendDomain(detailScaleKey, cell ? cell.value : null);
             });
           }
         });
@@ -1733,14 +1965,14 @@ looker.plugins.visualizations.add({
       root.children.forEach(collectDomains);
     }
 
-    const gradientColor = (stops, t) => {
-      if (stops.length === 1) return `rgb(${stops[0].join(", ")})`;
+    const gradientRgb = (stops, t) => {
+      if (stops.length === 1) return stops[0];
       const x = Math.min(Math.max(t, 0), 1) * (stops.length - 1);
       const i = Math.min(Math.floor(x), stops.length - 2);
       const f = x - i;
-      const rgb = stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * f));
-      return `rgb(${rgb.join(", ")})`;
+      return stops[i].map((c, k) => Math.round(c + (stops[i + 1][k] - c) * f));
     };
+    const gradientColor = (stops, t) => `rgb(${gradientRgb(stops, t).join(", ")})`;
 
     // Bars grow from zero, so a scale with negatives puts the zero line inside the cell.
     // Right to Left mirrors it: bars start at the right and negatives extend to the right.
@@ -1774,18 +2006,20 @@ looker.plugins.visualizations.add({
       return config[`label_${field.name}`] || field.label_short || field.label;
     };
     const groupText = (node) => `${levelLabel(node.depth)} "${node.rawValue === null || node.rawValue === undefined ? "∅" : node.rawValue}"`;
-    const cvScaleTitle = (column, kind, node) => {
-      const groupScope = cvConfig[column.measureName].groupScope;
-      let scope;
+    const scaleScopeText = (groupScope, kind, node) => {
       if (kind === "detail") {
-        scope = groupScope ? `within ${groupText(node)}` : `across all ${levelLabel(levelCount)} rows`;
-      } else if (node.depth === 1) {
-        scope = `across all ${levelLabel(1)} subtotals`;
-      } else {
-        scope = groupScope ? `within ${groupText(node.parent)}` : `across all ${levelLabel(node.depth)} subtotals`;
+        return groupScope ? `within ${groupText(node)}` : `across all ${levelLabel(levelCount)} rows`;
       }
-      return `Bar scale: ${scope}`;
+      if (node.depth === 1) return `across all ${levelLabel(1)} subtotals`;
+      return groupScope ? `within ${groupText(node.parent)}` : `across all ${levelLabel(node.depth)} subtotals`;
     };
+    const cvScaleTitle = (column, kind, node) => (
+      `Bar scale: ${scaleScopeText(cvConfig[column.measureName].groupScope, kind, node)}`
+    );
+    const cfScaleTitle = (rule, kind, node) => (
+      `Color scale: ${scaleScopeText(rule.groupScope, kind, node)}` +
+      (rule.shared ? ", shared across columns" : "")
+    );
 
     const hasFixedWidth = (column) => Number(config[`width_${column.measureName}`]) > 0;
 
@@ -1809,118 +2043,95 @@ looker.plugins.visualizations.add({
       if (!cv) return cellHtml;
       const num = parseNumericValue(rawValue);
       const barRow = num !== null && (kind === "detail" || (kind === "subtotal" && cv.subtotals));
-      const bar = barRow ? cvBarHtml(cv, num, cvDomains[cvDomainKey(column, kind, node)]) : "";
+      const bar = barRow ? cvBarHtml(cv, num, scaleDomains[cvDomainKey(column, kind, node)]) : "";
       const title = barRow ? ` title="${escapeAttr(cvScaleTitle(column, kind, node))}"` : "";
-      const labelClass = `cv-label${barRow && !cv.labels ? " is-hidden" : ""}`;
+      const labelClass = `cv-label${barRow && !cv.labels ? " is-hidden" : ""}${barRow && cv.halo ? " has-halo" : ""}`;
       const dirClass = (cv.rtl ? " is-rtl" : "") + (hasFixedWidth(column) ? "" : " is-auto-width");
 
       if (!cv.outside) {
-        return `<div class="cv-wrap is-inside${dirClass}"${title}>${bar}<span class="${labelClass}">${cellHtml}</span></div>`;
+        // The halo takes the tone opposite the cell's text color: white around dark text.
+        const halo = barRow && cv.halo ? ` style="--cv-halo: ${readableText(hexToRgb(baseFontColor(column.measureName, kind)), "#ffffff")};"` : "";
+        return `<div class="cv-wrap is-inside${dirClass}"${title}>${bar}<span class="${labelClass}"${halo}>${cellHtml}</span></div>`;
       }
       const index = cvColumnIndex[column.id];
       cvLabelChars[index] = Math.max(cvLabelChars[index], plainLength(cellHtml));
       return `<div class="cv-wrap is-outside${dirClass}"${title}><span class="cv-track">${bar}</span><span class="${labelClass}" style="min-width: var(--cv-lw-${index}, auto);">${cellHtml}</span></div>`;
     };
 
-    // Helper to evaluate if a cell matches any conditional formatting rule
-    const getCfStyle = (fieldName, kind, rawValue) => {
-      if (!isCfMasterEnabled) return null;
+    const cfMatches = (rule, numVal) => {
+      switch (rule.op) {
+        case "gt": return numVal > rule.thresh;
+        case "gte": return numVal >= rule.thresh;
+        case "lt": return numVal < rule.thresh;
+        case "lte": return numVal <= rule.thresh;
+        case "eq": return Math.abs(numVal - rule.thresh) < 1e-9;
+        case "neq": return Math.abs(numVal - rule.thresh) >= 1e-9;
+        case "between": {
+          const min = Math.min(rule.thresh, rule.threshMax);
+          const max = Math.max(rule.thresh, rule.threshMax);
+          return numVal >= min && numVal <= max;
+        }
+        default: return false;
+      }
+    };
+
+    // Conditional formatting of a metric cell. Single Color rules go first: the first match
+    // sets its colors. A scale rule then fills whichever of background / text is still unset,
+    // so "< 0 in red text" can sit on top of a background scale, and a matching single-color
+    // background takes the cell over from the scale. Scale rules never color the grand total.
+    // contrastBg: a scale background the text must stay readable on (auto-contrast).
+    const getCfStyle = (column, kind, node, rawValue) => {
+      if (cfRules.length === 0) return null;
+      const fieldName = column.measureName;
       // Cell Visualization replaces conditional formatting on its columns.
       if (cvConfig[fieldName]) return null;
       const numVal = parseNumericValue(rawValue);
       if (numVal === null) return null;
+      const appliesTo = (rule) => rule.fields.has(fieldName)
+        && !(kind === "subtotal" && !rule.subtotals)
+        && !(kind === "total" && !rule.totals);
 
-      for (let i = 1; i <= 5; i++) {
-        // Rule must be enabled
-        const isRuleActive = config[`cf_active_${i}`] === true || Boolean(config[`cf_field_${i}`]);
-        if (!isRuleActive) continue;
+      let bg = null;
+      let font = null;
+      let contrastBg = null;
+      let title = "";
+      const single = cfRules.find(rule => !rule.isScale && appliesTo(rule) && cfMatches(rule, numVal));
+      if (single) {
+        bg = single.bg;
+        font = single.font;
+      }
 
-        // Check if the current field is selected under Rule i across sequential active dropdown slots
-        const activeFieldsForRule = [];
-        for (let f = 1; f <= maxFieldsPerRule; f++) {
-          const val = config[`cf_field_${i}_${f}`] || (f === 1 ? config[`cf_field_${i}`] : "");
-          if (val && metrics.some(m => m.name === val)) {
-            activeFieldsForRule.push(val);
+      if (kind !== "total") {
+        const scale = cfScaleRules.find(rule => appliesTo(rule) && (rule.target === "bg" ? bg === null : font === null));
+        const domain = scale && scaleDomains[cfDomainKey(scale, column, kind, node)];
+        if (domain) {
+          let t = domain.max === domain.min ? 1 : (numVal - domain.min) / (domain.max - domain.min);
+          if (scale.reverse) t = 1 - t;
+          const rgb = gradientRgb(scale.stops, t);
+          const color = `rgb(${rgb.join(", ")})`;
+          if (scale.target === "bg") {
+            bg = color;
+            if (scale.contrast && font === null) contrastBg = rgb;
           } else {
-            break; // Stop at first empty slot so trailing/stale slots are never applied
+            font = color;
           }
-        }
-
-        const isLegacyChecked = config[`cf_field_${i}_${fieldName}`] === true;
-        const isFieldChecked = activeFieldsForRule.includes(fieldName) || isLegacyChecked;
-        if (!isFieldChecked) continue;
-
-        // Check subtotals / grand totals toggles (both default to true)
-        if (kind === "subtotal" && config[`cf_subtotals_${i}`] === false) continue;
-        if (kind === "total" && config[`cf_totals_${i}`] === false) continue;
-
-        const defaultPreset = cfPresetDefaults[i - 1];
-        const op = config[`cf_operator_${i}`] || defaultPreset.op;
-        const thresh = typeof config[`cf_value_${i}`] === "number" ? config[`cf_value_${i}`] : (parseFloat(config[`cf_value_${i}`]) || 0);
-        const threshMax = typeof config[`cf_value_max_${i}`] === "number" ? config[`cf_value_max_${i}`] : (parseFloat(config[`cf_value_max_${i}`]) || 0);
-
-        let matches = false;
-        switch (op) {
-          case "gt":
-            matches = numVal > thresh;
-            break;
-          case "gte":
-            matches = numVal >= thresh;
-            break;
-          case "lt":
-            matches = numVal < thresh;
-            break;
-          case "lte":
-            matches = numVal <= thresh;
-            break;
-          case "eq":
-            matches = Math.abs(numVal - thresh) < 1e-9;
-            break;
-          case "neq":
-            matches = Math.abs(numVal - thresh) >= 1e-9;
-            break;
-          case "between": {
-            const min = Math.min(thresh, threshMax);
-            const max = Math.max(thresh, threshMax);
-            matches = numVal >= min && numVal <= max;
-            break;
-          }
-          default:
-            matches = false;
-        }
-
-        if (matches) {
-          const useBg = config[`cf_use_bg_${i}`] ?? defaultPreset.useBg;
-          const useFont = config[`cf_use_font_${i}`] ?? defaultPreset.useFont;
-
-          // null = "don't override", so the cell falls back to the series/row colors
-          let bg = null;
-          if (useBg) {
-            bg = asColor(config[`cf_bg_${i}`], defaultPreset.bg);
-          }
-
-          let font = null;
-          if (useFont) {
-            font = asColor(config[`cf_font_${i}`], defaultPreset.font);
-          }
-
-          return { bg, font };
+          title = cfScaleTitle(scale, kind, node);
         }
       }
 
-      return null;
+      if (bg === null && font === null) return null;
+      return { bg, font, contrastBg, title };
     };
+    const cfTitleAttr = (cf) => (cf && cf.title ? ` title="${escapeAttr(cf.title)}"` : "");
 
     // Series color wins on that column. An empty series color falls through to the row color.
     // Conditional formatting (if matched) takes highest precedence for that cell.
-    const cellColorCss = (fieldName, kind, rawValue, depth = 1) => {
-      const rowFont = kind === "subtotal" ? subtotalFont : "#333333";
+    const cellColorCss = (fieldName, kind, depth = 1, cf = null) => {
       const groupBg = depth === 2 ? level2SubtotalBg : subtotalBg;
       const rowBackground = kind === "subtotal" ? groupBg : (kind === "total" ? "#e2e8f0" : rowBg);
 
-      const cf = getCfStyle(fieldName, kind, rawValue);
-
-      const font = (cf && cf.font !== null) ? cf.font : (asColor(config[`fontColor_${fieldName}`], "") || rowFont);
+      let font = (cf && cf.font !== null) ? cf.font : baseFontColor(fieldName, kind);
+      if (cf && cf.contrastBg) font = readableText(cf.contrastBg, font);
       const bg = (cf && cf.bg !== null) ? cf.bg : (asColor(config[`bgColor_${fieldName}`], "") || rowBackground);
       return `color: ${font}; background-color: ${bg};${borderMatchCss(fieldName)}`;
     };
@@ -2223,7 +2434,7 @@ looker.plugins.visualizations.add({
     const labelCell = (level, kind, depth, content, extraClass = "") => {
       if (isLevelHidden(level)) return "";
       const key = levelKeys[level - 1];
-      return `<td${classAttr(extraClass, levelTextStyle[level - 1], freezeColClass(level))} style="${cellColorCss(key, kind, undefined, depth)} ${levelCss[level - 1]}">${content}</td>`;
+      return `<td${classAttr(extraClass, levelTextStyle[level - 1], freezeColClass(level))} style="${cellColorCss(key, kind, depth)} ${levelCss[level - 1]}">${content}</td>`;
     };
 
     // A collapse only counts while its subtotal row is shown, since that row is the only way to undo it.
@@ -2274,7 +2485,8 @@ looker.plugins.visualizations.add({
         const subtotalHtml = withCellViz(column, "subtotal", node, rawSubtotalVal,
           withTrend(column.measureName, "subtotal", rawSubtotalVal, formattedSubtotal));
 
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "subtotal", rawSubtotalVal, node.depth)} ${mCss}">${subtotalHtml}</td>`;
+        const subCf = getCfStyle(column, "subtotal", node, rawSubtotalVal);
+        html += `<td class="number ${styleM}"${cfTitleAttr(subCf)} style="${cellColorCss(column.measureName, "subtotal", node.depth, subCf)} ${mCss}">${subtotalHtml}</td>`;
       });
       html += `</tr>`;
       previousPath = node.path;
@@ -2299,7 +2511,8 @@ looker.plugins.visualizations.add({
         const mCss = metricCellCss(column);
         const detailHtml = withCellViz(column, "detail", leaf, rawRowVal,
           withTrend(column.measureName, "detail", rawRowVal, mFormatted));
-        html += `<td class="number ${styleM}" style="${cellColorCss(column.measureName, "detail", rawRowVal)} ${mCss}">${detailHtml}</td>`;
+        const detailCf = getCfStyle(column, "detail", leaf, rawRowVal);
+        html += `<td class="number ${styleM}"${cfTitleAttr(detailCf)} style="${cellColorCss(column.measureName, "detail", 1, detailCf)} ${mCss}">${detailHtml}</td>`;
       });
       html += `</tr>`;
       previousPath = leaf.path;
@@ -2345,7 +2558,7 @@ looker.plugins.visualizations.add({
           rawTotalVal = grandTotals[column.id];
         }
 
-        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", rawTotalVal)} ${mCss}">${withCellViz(column, "total", null, rawTotalVal, withTrend(column.measureName, "total", rawTotalVal, formattedTotal))}</td>`;
+        html += `<td class="number ${textStyleClass(column.measureName)}" style="${cellColorCss(column.measureName, "total", 1, getCfStyle(column, "total", null, rawTotalVal))} ${mCss}">${withCellViz(column, "total", null, rawTotalVal, withTrend(column.measureName, "total", rawTotalVal, formattedTotal))}</td>`;
       });
       html += `</tr>`;
     }
